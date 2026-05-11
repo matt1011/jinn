@@ -32,3 +32,69 @@ describe("classifyError — constants and contract", () => {
     expect(c.kind).toBe("unknown");
   });
 });
+
+describe("classifyError — rate_limited", () => {
+  it("classifies HTTP 429 text", () => {
+    const c = classifyError(baseResult({ error: "HTTP 429 too many requests" }), "codex");
+    expect(c.kind).toBe("rate_limited");
+    expect(c.recoverable).toBe(true);
+  });
+
+  it("classifies 'overloaded' as rate_limited", () => {
+    const c = classifyError(baseResult({ error: "Service is overloaded, try again" }), "claude");
+    expect(c.kind).toBe("rate_limited");
+  });
+
+  it("classifies rateLimit.status=rejected as rate_limited even without text", () => {
+    const c = classifyError(
+      baseResult({ rateLimit: { status: "rejected", resetsAt: 1778500000 } }),
+      "claude",
+    );
+    expect(c.kind).toBe("rate_limited");
+  });
+
+  it("does NOT classify 'exceeded the request body limit' as rate_limited (regex tightening)", () => {
+    const c = classifyError(
+      baseResult({ error: "exceeded the request body limit of 10 MB" }),
+      "codex",
+    );
+    expect(c.kind).toBe("unknown");
+  });
+
+  it("still classifies 'exceeded the rate limit' as rate_limited", () => {
+    const c = classifyError(baseResult({ error: "exceeded the rate limit" }), "codex");
+    expect(c.kind).toBe("rate_limited");
+  });
+});
+
+describe("classifyError — usage_cap", () => {
+  it("classifies real-world Codex usage-cap message", () => {
+    const c = classifyError(
+      baseResult({
+        error:
+          "Error running remote compact task: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 7:10 AM.",
+      }),
+      "codex",
+    );
+    expect(c.kind).toBe("usage_cap");
+    expect(c.recoverable).toBe(true);
+  });
+
+  it("classifies 'credits exhausted' as usage_cap", () => {
+    const c = classifyError(baseResult({ error: "credits exhausted for the day" }), "codex");
+    expect(c.kind).toBe("usage_cap");
+  });
+
+  it("classifies 'quota exhausted' as usage_cap", () => {
+    const c = classifyError(baseResult({ error: "quota exhausted on plan" }), "gemini");
+    expect(c.kind).toBe("usage_cap");
+  });
+
+  it("classifies mixed phrasing 'rate limit + usage limit' as usage_cap (precedence lock)", () => {
+    const c = classifyError(
+      baseResult({ error: "rate limit reached — you've hit your usage limit" }),
+      "codex",
+    );
+    expect(c.kind).toBe("usage_cap");
+  });
+});

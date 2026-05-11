@@ -1,7 +1,16 @@
 import type { EngineResult } from "./types.js";
 
-const RATE_LIMIT_ERROR_RE =
-  /rate.?limit|too many requests|429|overloaded|usage.*limit|exceeded.*limit|out of extra usage/i;
+// Disambiguated patterns — usage-cap is checked first because some provider
+// messages contain both "rate limit" and "usage limit" phrasings.
+const USAGE_CAP_RE =
+  /usage\s*limit|hit your\s*(usage\s*)?limit|credits?\s*exhausted|quota\s*exhausted|compact task.*usage|purchase more credits/i;
+
+const RATE_LIMIT_RE =
+  /rate.?limit|too many requests|429|overloaded|out of extra usage|exceeded\s+(?:the\s+)?(?:rate|api|request|usage|throughput)\s*limit/i;
+
+// Keep existing RATE_LIMIT_ERROR_RE export for backwards compat with any
+// callers; alias to RATE_LIMIT_RE.
+export const RATE_LIMIT_ERROR_RE = RATE_LIMIT_RE;
 
 export interface RateLimitDetection {
   limited: boolean;
@@ -93,11 +102,29 @@ export interface ErrorClassification {
 
 export function classifyError(result: EngineResult, _engineName: string): ErrorClassification {
   const originalMessage = result.error ?? "";
-  return {
-    kind: "unknown",
-    recoverable: false,
-    retryAfter: null,
-    originalMessage,
-    detectedFrom: "engine_result",
-  };
+
+  // Explicit rateLimit signal from engine — short-circuit to rate_limited.
+  if (result.rateLimit?.status === "rejected") {
+    return {
+      kind: "rate_limited",
+      recoverable: true,
+      retryAfter: null,
+      originalMessage,
+      detectedFrom: "engine_result",
+    };
+  }
+
+  if (!originalMessage) {
+    return { kind: "unknown", recoverable: false, retryAfter: null, originalMessage, detectedFrom: "engine_result" };
+  }
+
+  if (USAGE_CAP_RE.test(originalMessage)) {
+    return { kind: "usage_cap", recoverable: true, retryAfter: null, originalMessage, detectedFrom: "engine_result" };
+  }
+
+  if (RATE_LIMIT_RE.test(originalMessage)) {
+    return { kind: "rate_limited", recoverable: true, retryAfter: null, originalMessage, detectedFrom: "engine_result" };
+  }
+
+  return { kind: "unknown", recoverable: false, retryAfter: null, originalMessage, detectedFrom: "engine_result" };
 }
