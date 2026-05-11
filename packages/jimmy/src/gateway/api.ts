@@ -7,6 +7,7 @@ import yaml from "js-yaml";
 import type { CronJob, Engine, IncomingMessage, JinnConfig, Session, Target } from "../shared/types.js";
 import { isInterruptibleEngine } from "../shared/types.js";
 import type { SessionManager } from "../sessions/manager.js";
+import { applyEngineErrorToSession } from "../sessions/manager.js";
 import { buildContext } from "../sessions/context.js";
 import {
   initDb,
@@ -81,7 +82,11 @@ export function resumePendingWebQueueItems(context: ApiContext): void {
     const engine = context.sessionManager.getEngine(session.engine);
     if (!engine) {
       cancelQueueItem(item.id);
-      updateSession(session.id, { status: "error", lastActivity: new Date().toISOString(), lastError: `Engine "${session.engine}" not available` });
+      applyEngineErrorToSession(session.id, session.engine, {
+        sessionId: session.id,
+        result: "",
+        error: `Engine "${session.engine}" not available`,
+      }, config);
       continue;
     }
 
@@ -702,10 +707,11 @@ export async function handleApiRequest(
       // Run engine asynchronously — respond immediately, push result via WebSocket
       const engine = context.sessionManager.getEngine(engineName);
       if (!engine) {
-        updateSession(session.id, {
-          status: "error",
-          lastError: `Engine "${engineName}" not available`,
-        });
+        applyEngineErrorToSession(session.id, engineName, {
+          sessionId: session.id,
+          result: "",
+          error: `Engine "${engineName}" not available`,
+        }, config);
         return json(res, { ...serializeSession({ ...session, status: "error", lastError: `Engine "${engineName}" not available` }, context) }, 201);
       }
 
@@ -2235,12 +2241,20 @@ async function runWebSession(
           metaAfter.engineSessions = nextEngineSessions;
           updateSession(currentSession.id, { transportMeta: metaAfter as any });
 
-          const completedFallback = updateSession(currentSession.id, {
+          updateSession(currentSession.id, {
             engineSessionId: fallbackResult.sessionId,
-            status: fallbackResult.error ? "error" : "idle",
-            lastActivity: new Date().toISOString(),
-            lastError: fallbackResult.error ?? null,
           });
+          let completedFallback: Session | null = null;
+          if (fallbackResult.error) {
+            applyEngineErrorToSession(currentSession.id, fallbackName, fallbackResult, config);
+            completedFallback = getSession(currentSession.id) ?? null;
+          } else {
+            completedFallback = updateSession(currentSession.id, {
+              status: "idle",
+              lastActivity: new Date().toISOString(),
+              lastError: null,
+            }) ?? null;
+          }
           if (completedFallback) {
             notifyParentSession(completedFallback, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
           }
@@ -2377,12 +2391,20 @@ async function runWebSession(
             insertMessage(currentSession.id, "assistant", retryResult.result);
           }
 
-          const completedAfterRetry = updateSession(currentSession.id, {
+          updateSession(currentSession.id, {
             ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
-            status: retryResult.error ? "error" : "idle",
-            lastActivity: new Date().toISOString(),
-            lastError: retryResult.error ?? null,
           });
+          let completedAfterRetry: Session | null = null;
+          if (retryResult.error) {
+            applyEngineErrorToSession(currentSession.id, currentSession.engine, retryResult, config);
+            completedAfterRetry = getSession(currentSession.id) ?? null;
+          } else {
+            completedAfterRetry = updateSession(currentSession.id, {
+              status: "idle",
+              lastActivity: new Date().toISOString(),
+              lastError: null,
+            }) ?? null;
+          }
 
           if (completedAfterRetry) {
             notifyRateLimitResumed(completedAfterRetry);
@@ -2435,12 +2457,20 @@ async function runWebSession(
       insertMessage(currentSession.id, "assistant", result.result);
     }
 
-    const completedSession = updateSession(currentSession.id, {
+    updateSession(currentSession.id, {
       ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
-      status: result.error ? "error" : "idle",
-      lastActivity: new Date().toISOString(),
-      lastError: result.error ?? null,
     });
+    let completedSession: Session | null = null;
+    if (result.error) {
+      applyEngineErrorToSession(currentSession.id, currentSession.engine, result, config);
+      completedSession = getSession(currentSession.id) ?? null;
+    } else {
+      completedSession = updateSession(currentSession.id, {
+        status: "idle",
+        lastActivity: new Date().toISOString(),
+        lastError: null,
+      }) ?? null;
+    }
     if (syncRequested && !rateLimit.limited && !wasInterrupted) {
       const meta = (getSession(currentSession.id)?.transportMeta || currentSession.transportMeta || {}) as Record<string, unknown>;
       if (meta && typeof meta === "object" && !Array.isArray(meta)) {

@@ -3,6 +3,7 @@ import type {
   Connector,
   Employee,
   Engine,
+  EngineResult,
   IncomingMessage,
   JinnConfig,
   Session,
@@ -23,7 +24,7 @@ import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
 import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
-import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, isDeadSessionError } from "../shared/rateLimit.js";
+import { classifyError, computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, extractRetryAfter, isDeadSessionError } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
@@ -35,6 +36,38 @@ export interface RouteOptions {
   engine?: string;
   model?: string;
   title?: string;
+}
+
+/**
+ * Centralised helper for transitioning a session to error state with full
+ * classification. Populates errorKind, errorRecoverable, errorRetryAfter (when
+ * recoverable), errorDetectedFrom in a single updateSession call.
+ *
+ * Returns the classification so callers can decide whether to schedule
+ * auto-resume (wired up in Task 11).
+ */
+export function applyEngineErrorToSession(
+  sessionId: string,
+  engineName: string,
+  result: EngineResult,
+  config?: JinnConfig,
+): { classification: ReturnType<typeof classifyError>; retryAfter: Date | null } {
+  const classification = classifyError(result, engineName);
+  const retryAfter = classification.recoverable
+    ? extractRetryAfter(classification.originalMessage, classification.kind, engineName, config)
+    : null;
+
+  updateSession(sessionId, {
+    status: "error",
+    lastError: classification.originalMessage || "Unknown engine error",
+    lastActivity: new Date().toISOString(),
+    errorKind: classification.kind,
+    errorRecoverable: classification.recoverable,
+    errorRetryAfter: retryAfter ? retryAfter.toISOString() : null,
+    errorDetectedFrom: classification.detectedFrom,
+  } as Parameters<typeof updateSession>[1]);
+
+  return { classification, retryAfter };
 }
 
 function maybeRevertEngineOverride(session: Session): Session {
@@ -466,15 +499,23 @@ export class SessionManager {
               await connector.removeReaction(target, "eyes").catch(() => {});
             }
 
-            const updated = updateSession(session.id, {
+            updateSession(session.id, {
               engineSessionId: fallbackResult.sessionId,
-              status: fallbackResult.error ? "error" : "idle",
               replyContext: msg.replyContext,
               messageId: msg.messageId ?? null,
               transportMeta: mergeTransportMeta(getSessionBySessionKey(msg.sessionKey)?.transportMeta ?? session.transportMeta, msg.transportMeta),
-              lastActivity: new Date().toISOString(),
-              lastError: fallbackResult.error ?? null,
             });
+            let updated: Session | null = null;
+            if (fallbackResult.error) {
+              applyEngineErrorToSession(session.id, fallbackName, fallbackResult, this.config);
+              updated = getSessionBySessionKey(msg.sessionKey) ?? null;
+            } else {
+              updated = updateSession(session.id, {
+                status: "idle",
+                lastActivity: new Date().toISOString(),
+                lastError: null,
+              }) ?? null;
+            }
             if (updated) {
               notifyParentSession(updated, { result: fallbackResult.result, error: fallbackResult.error ?? null, cost: fallbackResult.cost, durationMs: fallbackResult.durationMs }, { alwaysNotify: employee?.alwaysNotify });
             }
@@ -627,15 +668,23 @@ export class SessionManager {
             }
 
             await connector.replyMessage(target, retryText).catch(() => {});
-            const retryUpdated = updateSession(session.id, {
+            updateSession(session.id, {
               ...(retryResult.sessionId?.trim() ? { engineSessionId: retryResult.sessionId } : {}),
-              status: retryResult.error ? "error" : "idle",
               replyContext: msg.replyContext,
               messageId: msg.messageId ?? null,
               transportMeta: msg.transportMeta ?? null,
-              lastActivity: new Date().toISOString(),
-              lastError: retryResult.error ?? null,
             });
+            let retryUpdated: Session | null = null;
+            if (retryResult.error) {
+              applyEngineErrorToSession(session.id, session.engine, retryResult, this.config);
+              retryUpdated = getSessionBySessionKey(msg.sessionKey) ?? null;
+            } else {
+              retryUpdated = updateSession(session.id, {
+                status: "idle",
+                lastActivity: new Date().toISOString(),
+                lastError: null,
+              }) ?? null;
+            }
             if (retryUpdated) {
               notifyRateLimitResumed(retryUpdated);
               notifyDiscordChannel(
@@ -686,21 +735,34 @@ export class SessionManager {
       if (decorateMessages && capabilities.reactions) {
         await connector.removeReaction(target, "eyes").catch(() => {});
       }
-      const updatedSession = updateSession(session.id, {
+      const mergedTransportMeta = (() => {
+        const merged = mergeTransportMeta(getSessionBySessionKey(msg.sessionKey)?.transportMeta ?? session.transportMeta, msg.transportMeta) as Record<string, unknown>;
+        if (syncRequested && !rateLimit.limited && !wasInterrupted) {
+          delete merged["claudeSyncSince"];
+        }
+        return merged as any;
+      })();
+
+      // Always persist non-status fields first; the helper / idle branch below
+      // handles status + structured error fields.
+      updateSession(session.id, {
         ...(result.sessionId?.trim() ? { engineSessionId: result.sessionId } : {}),
-        status: wasInterrupted ? "idle" : (result.error ? "error" : "idle"),
         replyContext: msg.replyContext,
         messageId: msg.messageId ?? null,
-        transportMeta: (() => {
-          const merged = mergeTransportMeta(getSessionBySessionKey(msg.sessionKey)?.transportMeta ?? session.transportMeta, msg.transportMeta) as Record<string, unknown>;
-          if (syncRequested && !rateLimit.limited && !wasInterrupted) {
-            delete merged["claudeSyncSince"];
-          }
-          return merged as any;
-        })(),
-        lastActivity: new Date().toISOString(),
-        lastError: wasInterrupted ? null : (result.error ?? null),
+        transportMeta: mergedTransportMeta,
       });
+
+      let updatedSession: Session | null = null;
+      if (!wasInterrupted && result.error) {
+        applyEngineErrorToSession(session.id, session.engine, result, this.config);
+        updatedSession = getSessionBySessionKey(msg.sessionKey) ?? null;
+      } else {
+        updatedSession = updateSession(session.id, {
+          status: "idle",
+          lastActivity: new Date().toISOString(),
+          lastError: null,
+        }) ?? null;
+      }
       if (updatedSession) {
         notifyParentSession(updatedSession, { result: result.result, error: wasInterrupted ? null : (result.error ?? null), cost: result.cost, durationMs: result.durationMs }, { alwaysNotify: employee?.alwaysNotify });
       }
