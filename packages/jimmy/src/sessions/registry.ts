@@ -58,6 +58,22 @@ CREATE TABLE IF NOT EXISTS files (
 )
 `;
 
+const CREATE_AUTO_RESUME_TABLE = `
+CREATE TABLE IF NOT EXISTS auto_resume_queue (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  fire_at TEXT NOT NULL,
+  nudge TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  cancelled_at TEXT
+)`;
+
+const CREATE_AUTO_RESUME_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_auto_resume_pending
+ON auto_resume_queue(fire_at)
+WHERE cancelled_at IS NULL
+`;
+
 function parseJsonObject(value: unknown): JsonObject | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   try {
@@ -159,6 +175,9 @@ export function initDb(): Database.Database {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
+
+  db.exec(CREATE_AUTO_RESUME_TABLE);
+  db.exec(CREATE_AUTO_RESUME_INDEX);
 
   return db;
 }
@@ -679,4 +698,82 @@ export function deleteFile(id: string): boolean {
   const db = initDb();
   const result = db.prepare('DELETE FROM files WHERE id = ?').run(id);
   return result.changes > 0;
+}
+
+// ── Auto-resume queue ────────────────────────────────────────────────
+
+export interface AutoResumeRow {
+  id: string;
+  sessionId: string;
+  fireAt: string;
+  nudge: string;
+  createdAt: string;
+  cancelledAt: string | null;
+}
+
+export function enqueueAutoResume(opts: { sessionId: string; fireAt: string; nudge: string }): string {
+  const db = initDb();
+  const id = uuidv4();
+  const createdAt = new Date().toISOString();
+  // Cancel any prior pending entry for the same session before enqueueing.
+  db.prepare(
+    `UPDATE auto_resume_queue SET cancelled_at = ? WHERE session_id = ? AND cancelled_at IS NULL`,
+  ).run(createdAt, opts.sessionId);
+  db.prepare(
+    `INSERT INTO auto_resume_queue (id, session_id, fire_at, nudge, created_at) VALUES (?, ?, ?, ?, ?)`,
+  ).run(id, opts.sessionId, opts.fireAt, opts.nudge, createdAt);
+  return id;
+}
+
+export function cancelAutoResume(sessionId: string): void {
+  const db = initDb();
+  db.prepare(
+    `UPDATE auto_resume_queue SET cancelled_at = ? WHERE session_id = ? AND cancelled_at IS NULL`,
+  ).run(new Date().toISOString(), sessionId);
+}
+
+export function deleteAutoResume(id: string): void {
+  const db = initDb();
+  db.prepare(`DELETE FROM auto_resume_queue WHERE id = ?`).run(id);
+}
+
+export function listPendingAutoResumes(): AutoResumeRow[] {
+  const db = initDb();
+  const rows = db
+    .prepare(
+      `SELECT id, session_id, fire_at, nudge, created_at, cancelled_at
+         FROM auto_resume_queue
+        WHERE cancelled_at IS NULL
+        ORDER BY fire_at ASC`,
+    )
+    .all() as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: r.id as string,
+    sessionId: r.session_id as string,
+    fireAt: r.fire_at as string,
+    nudge: r.nudge as string,
+    createdAt: r.created_at as string,
+    cancelledAt: (r.cancelled_at as string) ?? null,
+  }));
+}
+
+export function getAutoResumeForSession(sessionId: string): AutoResumeRow | null {
+  const db = initDb();
+  const row = db
+    .prepare(
+      `SELECT id, session_id, fire_at, nudge, created_at, cancelled_at
+         FROM auto_resume_queue
+        WHERE session_id = ? AND cancelled_at IS NULL
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(sessionId) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    id: row.id as string,
+    sessionId: row.session_id as string,
+    fireAt: row.fire_at as string,
+    nudge: row.nudge as string,
+    createdAt: row.created_at as string,
+    cancelledAt: (row.cancelled_at as string) ?? null,
+  };
 }
