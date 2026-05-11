@@ -77,3 +77,27 @@ export function computeNextRetryDelayMs(resetsAtSeconds?: number): { delayMs: nu
   return { delayMs: 60_000 };
 }
 
+export type ErrorKind = "rate_limited" | "usage_cap" | "dead_session" | "engine_crashed" | "unknown";
+
+export const RECOVERABLE_KINDS: ReadonlySet<ErrorKind> = new Set(["rate_limited", "usage_cap"]);
+
+export const BUFFER_MS = 2 * 60_000;
+
+export interface ErrorClassification {
+  kind: ErrorKind;
+  recoverable: boolean;
+  retryAfter: Date | null;
+  originalMessage: string;
+  detectedFrom: "engine_result" | "process_exit" | "manual";
+}
+
+export function classifyError(result: EngineResult, _engineName: string): ErrorClassification {
+  const originalMessage = result.error ?? "";
+  return {
+    kind: "unknown",
+    recoverable: false,
+    retryAfter: null,
+    originalMessage,
+    detectedFrom: "engine_result",
+  };
+}
