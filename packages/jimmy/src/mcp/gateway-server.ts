@@ -184,6 +184,42 @@ const TOOLS = [
       required: ["jobId"],
     },
   },
+  {
+    name: "jinn_list_recoverable_sessions",
+    description:
+      "List Jinn sessions currently in a recoverable error state (rate_limited or usage_cap). " +
+      "Returns sessionId, title, engine, employee, errorKind, errorRetryAfter, autoResumeScheduledAt, lastErrorPreview, source.",
+    inputSchema: { type: "object" as const, properties: {}, additionalProperties: false },
+  },
+  {
+    name: "jinn_get_session_error",
+    description:
+      "Return structured error details for a Jinn session, including any scheduled auto-resume info.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        sessionId: { type: "string", description: "The Jinn session ID." },
+      },
+      required: ["sessionId"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "jinn_resume_session",
+    description:
+      "Resume a Jinn session that is in error, waiting, or interrupted state. " +
+      "Preserves the engine thread (engineSessionId) and dispatches the optional " +
+      "nudge as the next message. Defaults nudge to 'keep going'.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        sessionId: { type: "string", description: "The Jinn session ID." },
+        nudge: { type: "string", description: "Message to send after resume. Default 'keep going'." },
+      },
+      required: ["sessionId"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 // ─── API Helpers ───
@@ -219,7 +255,7 @@ async function apiPut(path: string, body: unknown): Promise<unknown> {
 
 // ─── Tool Handlers ───
 
-async function handleTool(name: string, args: Record<string, unknown>): Promise<string> {
+export async function mcpHandleTool(name: string, args: Record<string, unknown>): Promise<string> {
   switch (name) {
     case "send_message": {
       const connector = (args.connector as string) || "slack";
@@ -316,6 +352,51 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       return JSON.stringify(result);
     }
 
+    case "jinn_list_recoverable_sessions": {
+      const { handleListRecoverable } = await import("../gateway/api.js");
+      const result = await handleListRecoverable();
+      return JSON.stringify(result.body, null, 2);
+    }
+
+    case "jinn_get_session_error": {
+      const sessionId = String(args.sessionId);
+      const { getSession, getAutoResumeForSession } = await import("../sessions/registry.js");
+      const s = getSession(sessionId);
+      if (!s) throw new Error(`session not found: ${sessionId}`);
+      const ar = getAutoResumeForSession(sessionId);
+      return JSON.stringify({
+        sessionId: s.id,
+        status: s.status,
+        errorKind: s.errorKind ?? null,
+        errorRecoverable: s.errorRecoverable ?? null,
+        errorRetryAfter: s.errorRetryAfter ?? null,
+        errorDetectedFrom: s.errorDetectedFrom ?? null,
+        lastError: s.lastError ?? null,
+        autoResumeScheduledAt: ar?.fireAt ?? null,
+        autoResumeNudge: ar?.nudge ?? null,
+      }, null, 2);
+    }
+
+    case "jinn_resume_session": {
+      const sessionId = String(args.sessionId);
+      const nudge = typeof args.nudge === "string" && args.nudge.length > 0 ? args.nudge : "keep going";
+      const { handleResumeRequest } = await import("../gateway/api.js");
+      const { getAutoResumeDispatcher } = await import("../sessions/autoResumer.js");
+      const dispatcher = getAutoResumeDispatcher();
+      if (!dispatcher) {
+        throw new Error("auto-resume dispatcher not initialised — gateway boot incomplete");
+      }
+      const result = await handleResumeRequest(
+        sessionId,
+        { nudge, preserveEngineSession: true },
+        { dispatchMessage: dispatcher },
+      );
+      if (result.status >= 400) {
+        throw new Error(`resume failed: ${JSON.stringify(result.body)}`);
+      }
+      return JSON.stringify({ sessionId, dispatched: true, status: result.status }, null, 2);
+    }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -361,7 +442,7 @@ async function handleRequest(request: JsonRpcRequest): Promise<void> {
       const toolName = params?.name as string;
       const toolArgs = (params?.arguments as Record<string, unknown>) || {};
       try {
-        const result = await handleTool(toolName, toolArgs);
+        const result = await mcpHandleTool(toolName, toolArgs);
         sendResponse({
           jsonrpc: "2.0",
           id,
