@@ -75,13 +75,32 @@ export function applyEngineErrorToSession(
   // so per-target precedence (cron job > employee > global) can be evaluated.
   if (classification.recoverable && retryAfter && config) {
     let employee: Employee | null = ctx?.employee ?? null;
-    if (!employee) {
-      const sess = getSession(sessionId);
-      if (sess?.employee) {
+    let cronJob: import("../shared/types.js").CronJob | null = ctx?.cronJob ?? null;
+    const sess = (!employee || !cronJob) ? getSession(sessionId) : null;
+    if (!employee && sess?.employee) {
+      try {
+        employee = findEmployee(sess.employee, scanOrg()) ?? null;
+      } catch {
+        employee = null;
+      }
+    }
+    if (!cronJob && sess) {
+      // Auto-detect cron job for cron-spawned sessions so per-cron auto-resume
+      // overrides take effect without callers having to thread ctx.cronJob.
+      let cronJobId: string | null = null;
+      if (sess.transportMeta && typeof sess.transportMeta === "object") {
+        const meta = sess.transportMeta as Record<string, unknown>;
+        if (typeof meta.cronJobId === "string") cronJobId = meta.cronJobId;
+      }
+      if (!cronJobId && sess.sessionKey && sess.sessionKey.startsWith("cron:")) {
+        const parts = sess.sessionKey.split(":");
+        if (parts.length >= 2 && parts[1]) cronJobId = parts[1];
+      }
+      if (cronJobId) {
         try {
-          employee = findEmployee(sess.employee, scanOrg()) ?? null;
+          cronJob = loadJobs().find((j) => j.id === cronJobId) ?? null;
         } catch {
-          employee = null;
+          cronJob = null;
         }
       }
     }
@@ -89,7 +108,7 @@ export function applyEngineErrorToSession(
       kind: classification.kind,
       config,
       employee,
-      cronJob: ctx?.cronJob ?? null,
+      cronJob,
     });
     if (resolved.enabled) {
       scheduleAutoResume({ sessionId, fireAt: retryAfter, nudge: resolved.nudge });

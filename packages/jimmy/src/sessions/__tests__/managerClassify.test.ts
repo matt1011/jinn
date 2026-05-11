@@ -6,9 +6,33 @@ const tmpHome = mkdtempSync(path.join(tmpdir(), "jinn-mgr-classify-"));
 process.env.JINN_HOME = tmpHome;
 mkdirSync(path.join(tmpHome, "sessions"), { recursive: true });
 
-import { describe, it, expect, afterAll } from "vitest";
-import { createSession, getSession } from "../registry.js";
+import { describe, it, expect, afterAll, vi } from "vitest";
+
+// Mock the cron jobs loader so the test doesn't depend on the user's real
+// ~/.jinn/cron/jobs.json (paths.ts resolves CRON_JOBS at module-load, before
+// the env-var swap above takes effect, so loadJobs() would otherwise read
+// the real home directory).
+vi.mock("../../cron/jobs.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../cron/jobs.js")>();
+  return {
+    ...actual,
+    loadJobs: () => [
+      {
+        id: "test-job",
+        name: "Test Job",
+        enabled: true,
+        schedule: "0 0 * * *",
+        prompt: "",
+        autoResumeOnUsageCap: true,
+        autoResumeNudge: "cron-specific nudge",
+      },
+    ],
+  };
+});
+
+import { createSession, getSession, listPendingAutoResumes } from "../registry.js";
 import { applyEngineErrorToSession } from "../manager.js";
+import type { JinnConfig } from "../../shared/types.js";
 
 afterAll(() => {
   rmSync(tmpHome, { recursive: true, force: true });
@@ -73,6 +97,44 @@ describe("applyEngineErrorToSession", () => {
     const loaded = getSession(s.id);
     expect(loaded?.errorKind).toBe("dead_session");
     expect(loaded?.errorRecoverable).toBe(false);
+  });
+
+  it("auto-detects CronJob from cron-sourced session and honors per-cron override", () => {
+    const s = createSession({
+      engine: "codex",
+      source: "cron",
+      sourceRef: "test-job",
+      sessionKey: "cron:test-job:12345",
+      connector: "cron",
+      transportMeta: { cronJobId: "test-job" } as any,
+    } as Parameters<typeof createSession>[0]);
+
+    const config = {
+      jinn: { version: "0.10.0" },
+      gateway: { port: 7777, host: "127.0.0.1" },
+      engines: { default: "codex", codex: {}, claude: {}, gemini: {} },
+      connectors: {},
+      logging: { file: false, stdout: false, level: "info" },
+      sessions: { autoResumeOnUsageCap: false }, // global says NO
+    } as unknown as JinnConfig;
+
+    applyEngineErrorToSession(
+      s.id,
+      "codex",
+      {
+        sessionId: s.id,
+        result: "",
+        error: "hit your usage limit; try again at 7:10 AM",
+        cost: 0,
+        numTurns: 0,
+      },
+      config,
+    );
+
+    // Cron job override (true) should override the global (false)
+    const pending = listPendingAutoResumes().filter((r) => r.sessionId === s.id);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].nudge).toBe("cron-specific nudge");
   });
 
   it("returns the classification for caller inspection", () => {
