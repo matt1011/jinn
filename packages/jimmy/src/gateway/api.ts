@@ -535,6 +535,24 @@ export async function handleApiRequest(
         if (!trimmed) return badRequest(res, "title must not be empty");
         updates.title = trimmed.slice(0, 200);
       }
+      // E2E escape hatch — when JINN_E2E=1, allow tests to seed error-state fields
+      // directly (status / lastError / errorKind / errorRecoverable / errorRetryAfter /
+      // errorDetectedFrom) without having to drive a real engine to failure. The env
+      // var is never set in production; only the Playwright webServer process sets it.
+      if (process.env.JINN_E2E === "1") {
+        for (const field of [
+          "status",
+          "lastError",
+          "errorKind",
+          "errorRecoverable",
+          "errorRetryAfter",
+          "errorDetectedFrom",
+        ] as const) {
+          if (body[field] !== undefined) {
+            (updates as Record<string, unknown>)[field] = body[field];
+          }
+        }
+      }
       if (Object.keys(updates).length === 0) return badRequest(res, "no valid fields to update");
       const updated = updateSession(params.id, updates);
       if (!updated) return notFound(res);
