@@ -443,6 +443,15 @@ export function listSessions(filter?: ListSessionsFilter): Session[] {
 }
 
 /**
+ * Returns all sessions ordered by last_activity DESC, with no filtering.
+ * Thin alias over listSessions() used by callers (e.g. recoverable listing) that
+ * want all sessions and do their own in-memory filtering.
+ */
+export function listAllSessions(): Session[] {
+  return listSessions();
+}
+
+/**
  * Mark any sessions stuck in "running" status as "interrupted".
  * Called on gateway startup — if the gateway is starting, no sessions can actually be running.
  * Sessions with an engine_session_id can be resumed via the Claude --resume flag.

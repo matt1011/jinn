@@ -12,6 +12,7 @@ import { buildContext } from "../sessions/context.js";
 import {
   initDb,
   listSessions,
+  listAllSessions,
   getSession,
   createSession,
   updateSession,
@@ -27,6 +28,7 @@ import {
   cancelAllPendingQueueItems,
   listAllPendingQueueItems,
   getFile,
+  getAutoResumeForSession,
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
 import { cancelScheduledAutoResume } from "../sessions/autoResumer.js";
@@ -365,6 +367,39 @@ export async function handleResumeRequest(
   return { status: 200, body: updated };
 }
 
+export interface RecoverableSessionSummary {
+  sessionId: string;
+  title: string | null;
+  engine: string;
+  employee: string | null;
+  errorKind: string;
+  errorRetryAfter: string | null;
+  autoResumeScheduledAt: string | null;
+  lastErrorPreview: string;
+  source: string;
+}
+
+export async function handleListRecoverable(): Promise<{ status: number; body: RecoverableSessionSummary[] }> {
+  const all = listAllSessions();
+  const recoverable = all
+    .filter((s) => s.status === "error" && s.errorRecoverable === true)
+    .map((s) => {
+      const ar = getAutoResumeForSession(s.id);
+      return {
+        sessionId: s.id,
+        title: s.title,
+        engine: s.engine,
+        employee: s.employee,
+        errorKind: s.errorKind ?? "unknown",
+        errorRetryAfter: s.errorRetryAfter ?? null,
+        autoResumeScheduledAt: ar?.fireAt ?? null,
+        lastErrorPreview: (s.lastError ?? "").slice(0, 240),
+        source: s.source,
+      } satisfies RecoverableSessionSummary;
+    });
+  return { status: 200, body: recoverable };
+}
+
 export async function handleApiRequest(
   req: HttpRequest,
   res: ServerResponse,
@@ -424,6 +459,12 @@ export async function handleApiRequest(
       const { getInterruptedSessions } = await import("../sessions/registry.js");
       const interrupted = getInterruptedSessions();
       return json(res, interrupted.map((session) => serializeSession(session, context)));
+    }
+
+    // GET /api/sessions/recoverable — MUST come before /api/sessions/:id
+    if (method === "GET" && pathname === "/api/sessions/recoverable") {
+      const result = await handleListRecoverable();
+      return json(res, result.body, result.status);
     }
 
     // GET /api/sessions/:id
@@ -534,6 +575,16 @@ export async function handleApiRequest(
       logger.info(`Session ${params.id} reset via API (cleared engineSessions, engineOverride, engineSessionId, lastError)`);
       context.emit("session:updated", { sessionId: params.id });
       return json(res, { status: "reset", sessionId: params.id });
+    }
+
+    // POST /api/sessions/:id/resume/cancel — cancel a pending auto-resume without resuming.
+    // MUST come before /api/sessions/:id/resume so matchRoute doesn't consume "/resume" first.
+    params = matchRoute("/api/sessions/:id/resume/cancel", pathname);
+    if (method === "POST" && params) {
+      const session = getSession(params.id);
+      if (!session) return notFound(res);
+      cancelScheduledAutoResume(params.id);
+      return json(res, { ok: true });
     }
 
     // POST /api/sessions/:id/resume — clear recoverable error state and re-dispatch
