@@ -135,3 +135,57 @@ export function classifyError(result: EngineResult, _engineName: string): ErrorC
   // zero-work non-rate-limit errors are caught by isDeadSessionError above.
   return { kind: "engine_crashed", recoverable: false, retryAfter: null, originalMessage, detectedFrom: "engine_result" };
 }
+
+const ISO_RE = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b/;
+const TIME_OF_DAY_RE = /\btry again at\s+(\d{1,2}):(\d{2})\s*(AM|PM)?\b/i;
+
+/**
+ * Extract a retry-at timestamp from a provider error message.
+ *
+ * Resolution order:
+ *   1. ISO-8601 timestamp anywhere in the text.
+ *   2. "try again at H:MM AM/PM" phrasing (provider speaks user-local time).
+ *   3. null (caller decides fallback; Task 5 will add PROVIDER_RESET_DEFAULTS).
+ *
+ * The returned Date always includes the +2 min buffer (BUFFER_MS) and is
+ * guaranteed to be at least now + 5 minutes in the future, even when the
+ * provider quoted a past time (clock skew or ambiguous AM/PM).
+ */
+export function extractRetryAfter(
+  errorText: string,
+  _kind: ErrorKind,
+  _engineName: string,
+): Date | null {
+  if (!errorText) return null;
+
+  const isoMatch = errorText.match(ISO_RE);
+  if (isoMatch) {
+    const parsed = new Date(isoMatch[0]);
+    if (!Number.isNaN(parsed.getTime())) {
+      return clampFutureWithBuffer(parsed);
+    }
+  }
+
+  const todMatch = errorText.match(TIME_OF_DAY_RE);
+  if (todMatch) {
+    const hour12 = parseInt(todMatch[1], 10);
+    const minute = parseInt(todMatch[2], 10);
+    const ampm = (todMatch[3] || "").toUpperCase();
+    let hour24 = hour12;
+    if (ampm === "PM" && hour12 < 12) hour24 = hour12 + 12;
+    if (ampm === "AM" && hour12 === 12) hour24 = 0;
+    const now = new Date();
+    const candidate = new Date(now);
+    candidate.setHours(hour24, minute, 0, 0);
+    return clampFutureWithBuffer(candidate);
+  }
+
+  return null;
+}
+
+function clampFutureWithBuffer(target: Date): Date {
+  const now = Date.now();
+  const minFuture = now + Math.max(BUFFER_MS, 5 * 60_000);
+  const withBuffer = target.getTime() + BUFFER_MS;
+  return new Date(Math.max(withBuffer, minFuture));
+}
