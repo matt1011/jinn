@@ -119,8 +119,19 @@ gateway:
 engines:
   claude:
     enabled: true
+    resetWindow:
+      rate_limited_min: 5
+      usage_cap_min: 300
   codex:
     enabled: false
+    resetWindow:
+      rate_limited_min: 1
+      usage_cap_min: 60
+
+sessions:
+  autoResumeOnRateLimit: true     # auto-resume on provider rate limit (default true)
+  autoResumeOnUsageCap: false     # opt-in: auto-resume on provider usage cap
+  autoResumeNudge: "keep going"   # message sent when auto-resume fires
 
 connectors:
   slack:
@@ -139,6 +150,12 @@ org:
     - name: reviewer
       role: code-review
 ```
+
+**Error-state auto-resume.** When a provider rate-limits or usage-caps a session,
+Jinn classifies the error (`rate_limited`, `usage_cap`, `dead_session`,
+`engine_crashed`, `unknown`) and can automatically resume the session after the
+provider's reset window. See the spec under
+`.planning/specs/error-states-and-resume/` for the full design.
 
 ## 📁 Project Structure
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.11.0] - 2026-05-10 — Error state disambiguation & session resume
+
+### ✨ Added
+- **5-kind error taxonomy on sessions** — `rate_limited`, `usage_cap`, `dead_session`, `engine_crashed`, `unknown`. Stored on `Session` as `errorKind`, `errorRecoverable`, `errorRetryAfter`, `errorDetectedFrom`.
+- **Auto-resume scheduler** — rate-limited sessions auto-resume by default; usage-capped sessions auto-resume when opted in via `config.sessions.autoResumeOnUsageCap` (with per-employee and per-cron-job overrides). Honors provider-reported retry-at timestamps with a +2 minute buffer; falls back to `engines.<name>.resetWindow` config.
+- **`POST /api/sessions/:id/resume`** with optional `{ nudge, preserveEngineSession }`. Preserves `engineSessionId` by default so codex/claude resume the same thread.
+- **`GET /api/sessions/recoverable`** returning the list of recoverable error-state sessions with kind, retry-at, and auto-resume schedule.
+- **`POST /api/sessions/:id/resume/cancel`** to cancel a pending auto-resume without resuming.
+- **MCP tools** — `jinn_list_recoverable_sessions`, `jinn_get_session_error`, `jinn_resume_session`.
+- **Web UI** — error-kind chip in session header that opens a `ResumeModal` with editable nudge and live countdown. Sessions list shows kind badges and a "Recoverable only" filter chip. Cron page shows last-run indicator with auto-resume countdown.
+
+### 🔧 Changed
+- `migrateSessionsSchema` now also adds `error_kind`, `error_recoverable`, `error_retry_after`, `error_detected_from` columns. Creates `auto_resume_queue` table.
+- `GET /api/cron` response now includes a `latestRun` field per job with optional `errorKind` and `autoResumeScheduledAt`.
+
+### 📝 Notes
+- `POST /api/sessions/:id/reset` still works but nukes `engineSessionId`. Prefer `/resume` for recoverable errors.
+- Pre-existing `error`-state sessions without classification get NULL fields; new errors classify on their next transition.
+- `SessionDetail` component is built and unit-tested but not yet mounted on a Next.js route; UI E2E is gated until that route is added.
+
 ## [0.10.0] - 2026-04-28
 
 ### ✨ Features
