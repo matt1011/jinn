@@ -29,6 +29,7 @@ import {
   getFile,
 } from "../sessions/registry.js";
 import { forkEngineSession } from "../sessions/fork.js";
+import { cancelScheduledAutoResume } from "../sessions/autoResumer.js";
 import {
   CONFIG_PATH,
   CRON_JOBS,
@@ -329,6 +330,41 @@ function checkInstanceHealth(port: number): Promise<boolean> {
   });
 }
 
+export async function handleResumeRequest(
+  sessionId: string,
+  body: { nudge?: string; preserveEngineSession?: boolean },
+  deps: { dispatchMessage: (sessionId: string, nudge: string) => Promise<void> },
+): Promise<{ status: number; body?: unknown }> {
+  const session = getSession(sessionId);
+  if (!session) return { status: 404, body: { error: "session not found" } };
+
+  if (session.status !== "error" && session.status !== "waiting" && session.status !== "interrupted") {
+    return { status: 409, body: { error: `cannot resume from status=${session.status}` } };
+  }
+
+  const nudge = typeof body.nudge === "string" && body.nudge.length > 0 ? body.nudge : "keep going";
+  const preserveEngineSession = body.preserveEngineSession !== false;
+
+  // Cancel any pending auto-resume for this session before manual resume.
+  cancelScheduledAutoResume(sessionId);
+
+  updateSession(sessionId, {
+    status: "running",
+    lastError: null,
+    errorKind: null,
+    errorRecoverable: null,
+    errorRetryAfter: null,
+    errorDetectedFrom: null,
+    lastActivity: new Date().toISOString(),
+    ...(preserveEngineSession ? {} : { engineSessionId: null }),
+  } as Parameters<typeof updateSession>[1]);
+
+  await deps.dispatchMessage(sessionId, nudge);
+
+  const updated = getSession(sessionId);
+  return { status: 200, body: updated };
+}
+
 export async function handleApiRequest(
   req: HttpRequest,
   res: ServerResponse,
@@ -498,6 +534,19 @@ export async function handleApiRequest(
       logger.info(`Session ${params.id} reset via API (cleared engineSessions, engineOverride, engineSessionId, lastError)`);
       context.emit("session:updated", { sessionId: params.id });
       return json(res, { status: "reset", sessionId: params.id });
+    }
+
+    // POST /api/sessions/:id/resume — clear recoverable error state and re-dispatch
+    params = matchRoute("/api/sessions/:id/resume", pathname);
+    if (method === "POST" && params) {
+      const _parsed = await readJsonBody(req, res);
+      if (!_parsed.ok) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = _parsed.body as any;
+      const result = await handleResumeRequest(params.id, body, {
+        dispatchMessage: (sessionId, nudge) => context.sessionManager.dispatchNudge(sessionId, nudge),
+      });
+      return json(res, result.body ?? { ok: true }, result.status);
     }
 
     // POST /api/sessions/:id/duplicate — duplicate a session (snapshot fork)
