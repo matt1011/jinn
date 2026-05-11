@@ -13,6 +13,7 @@ import {
 const TICK_MS = 30_000;
 let tickHandle: NodeJS.Timeout | null = null;
 let dispatchFn: ((sessionId: string, nudge: string) => Promise<void>) | null = null;
+let tickInFlight = false;
 
 export interface AutoResumeResolution {
   enabled: boolean;
@@ -115,14 +116,37 @@ export function getAutoResumeDispatcher():
 export function startAutoResumer(): void {
   if (tickHandle) return;
   tickHandle = setInterval(() => {
-    tick().catch((err) => {
-      logger.error(
-        `[autoResumer] tick error: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    });
+    if (tickInFlight) {
+      logger.debug("[autoResumer] previous tick still in-flight, skipping");
+      return;
+    }
+    tickInFlight = true;
+    tick()
+      .catch((err) => {
+        logger.error(
+          `[autoResumer] tick error: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      })
+      .finally(() => {
+        tickInFlight = false;
+      });
   }, TICK_MS);
   // Replay-on-boot: catch any rows that came due while gateway was down.
-  tick().catch(() => undefined);
+  tickInFlight = true;
+  tick()
+    .catch((err) => {
+      logger.error(
+        `[autoResumer] boot tick error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    })
+    .finally(() => {
+      tickInFlight = false;
+    });
+}
+
+/** Run one tick immediately. Exposed for tests. */
+export async function runOneTickForTest(): Promise<void> {
+  await tick();
 }
 
 export function stopAutoResumer(): void {

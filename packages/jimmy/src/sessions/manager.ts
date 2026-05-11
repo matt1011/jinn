@@ -954,6 +954,7 @@ export class SessionManager {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: nudge }),
+        signal: AbortSignal.timeout(30_000),
       });
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
