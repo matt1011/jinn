@@ -114,7 +114,7 @@ test.describe("Recoverable session resume flow", () => {
       },
     });
 
-    await page.goto(`${WEB}/sessions/${session.id}`);
+    await page.goto(`${WEB}/sessions?id=${session.id}`);
 
     const chip = page.getByTestId("error-chip");
     await expect(chip).toBeVisible({ timeout: 10_000 });

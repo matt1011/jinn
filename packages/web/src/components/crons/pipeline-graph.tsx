@@ -118,8 +118,8 @@ function CronCardGroup({ crons, label }: { crons: CronJob[]; label: string }) {
                 <div className="mt-1.5">
                   {cron.latestRun.sessionId ? (
                     <Link
-                      href={`/sessions/${cron.latestRun.sessionId}${
-                        cron.latestRun.errorKind ? "?resume=1" : ""
+                      href={`/sessions?id=${cron.latestRun.sessionId}${
+                        cron.latestRun.errorKind ? "&resume=1" : ""
                       }`}
                       className="inline-block no-underline"
                     >
