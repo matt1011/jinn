@@ -170,6 +170,10 @@ export function migrateSessionsSchema(database: Database.Database): void {
     ['total_cost', 'REAL', '0'],
     ['total_turns', 'INTEGER', '0'],
     ['effort_level', 'TEXT'],
+    ['error_kind', 'TEXT'],
+    ['error_recoverable', 'INTEGER'],
+    ['error_retry_after', 'TEXT'],
+    ['error_detected_from', 'TEXT'],
   ];
 
   for (const [name, type, defaultVal] of missingColumns) {
