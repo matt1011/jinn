@@ -53,16 +53,14 @@ export function resolveAutoResume(opts: {
   const globalEnabled =
     typeof globalEnabledRaw === "boolean" ? globalEnabledRaw : globalDefault;
 
-  // Employee + CronJob only carry `autoResumeOnUsageCap` (per types in Task 6).
-  // For `rate_limited`, only the global value applies. For `usage_cap`, walk
-  // the precedence chain: cron job > employee > global.
+  // Precedence: cron job > employee > global > kind-default.
+  // Applies uniformly to both recoverable kinds (rate_limited, usage_cap).
+  const empEnabled = employee?.[fieldEnabled];
+  const jobEnabled = cronJob?.[fieldEnabled];
+
   let enabled = globalEnabled;
-  if (kind === "usage_cap") {
-    const empEnabled = employee?.autoResumeOnUsageCap;
-    const jobEnabled = cronJob?.autoResumeOnUsageCap;
-    if (typeof jobEnabled === "boolean") enabled = jobEnabled;
-    else if (typeof empEnabled === "boolean") enabled = empEnabled;
-  }
+  if (typeof empEnabled === "boolean") enabled = empEnabled;
+  if (typeof jobEnabled === "boolean") enabled = jobEnabled;
 
   const nudge =
     cronJob?.autoResumeNudge ??

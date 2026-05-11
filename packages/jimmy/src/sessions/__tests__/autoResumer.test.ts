@@ -111,6 +111,58 @@ describe("resolveAutoResume — precedence", () => {
     const r = resolveAutoResume({ kind: "usage_cap", config: cfg });
     expect(r.enabled).toBe(true);
   });
+
+  it("rate_limited honors cron > employee > global precedence", () => {
+    const cfg = minimalConfig();
+    cfg.sessions = { autoResumeOnRateLimit: true, autoResumeNudge: "global" };
+    const emp = {
+      name: "codex-engineer",
+      displayName: "Codex Engineer",
+      department: "engineering",
+      rank: "senior",
+      engine: "codex",
+      model: "gpt-5.5",
+      persona: "",
+      autoResumeOnRateLimit: false,
+      autoResumeNudge: "employee",
+    } as Employee;
+    const job = {
+      id: "j",
+      name: "j",
+      enabled: true,
+      schedule: "0 0 * * *",
+      prompt: "",
+      autoResumeOnRateLimit: true,
+      autoResumeNudge: "job",
+    } as CronJob;
+
+    const r = resolveAutoResume({
+      kind: "rate_limited",
+      config: cfg,
+      employee: emp,
+      cronJob: job,
+    });
+    expect(r.enabled).toBe(true); // cron job wins over employee
+    expect(r.nudge).toBe("job");
+  });
+
+  it("rate_limited employee override beats global", () => {
+    const cfg = minimalConfig();
+    cfg.sessions = { autoResumeOnRateLimit: true };
+    const emp = {
+      name: "codex-engineer",
+      displayName: "Codex Engineer",
+      department: "engineering",
+      rank: "senior",
+      engine: "codex",
+      model: "gpt-5.5",
+      persona: "",
+      autoResumeOnRateLimit: false, // employee disables
+    } as Employee;
+
+    const r = resolveAutoResume({ kind: "rate_limited", config: cfg, employee: emp });
+    expect(r.enabled).toBe(false);
+  });
 });
 
 describe("scheduleAutoResume — persistence", () => {

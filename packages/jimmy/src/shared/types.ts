@@ -194,6 +194,7 @@ export interface CronJob {
   delivery?: CronDelivery;
   // NEW — auto-resume opt-in
   autoResumeOnUsageCap?: boolean;
+  autoResumeOnRateLimit?: boolean;
   autoResumeNudge?: string;
 }
 
@@ -228,6 +229,7 @@ export interface Employee {
   provides?: ServiceDeclaration[];
   // NEW — auto-resume opt-in (overrides global, overridden by cron job)
   autoResumeOnUsageCap?: boolean;
+  autoResumeOnRateLimit?: boolean;
   autoResumeNudge?: string;
 }
 
