@@ -13,12 +13,15 @@ import {
   accumulateSessionCost,
   createSession,
   deleteSession,
+  getSession,
   getSessionBySessionKey,
   getMessages,
   insertMessage,
   updateSession,
 } from "./registry.js";
 import { notifyParentSession, notifyRateLimited, notifyRateLimitResumed, notifyDiscordChannel } from "./callbacks.js";
+import { resolveAutoResume, scheduleAutoResume } from "./autoResumer.js";
+import { findEmployee, scanOrg } from "../gateway/org.js";
 import { buildContext } from "./context.js";
 import { SessionQueue } from "./queue.js";
 import { JINN_HOME } from "../shared/paths.js";
@@ -51,6 +54,7 @@ export function applyEngineErrorToSession(
   engineName: string,
   result: EngineResult,
   config?: JinnConfig,
+  ctx?: { cronJob?: import("../shared/types.js").CronJob | null; employee?: Employee | null },
 ): { classification: ReturnType<typeof classifyError>; retryAfter: Date | null } {
   const classification = classifyError(result, engineName);
   const retryAfter = classification.recoverable
@@ -66,6 +70,31 @@ export function applyEngineErrorToSession(
     errorRetryAfter: retryAfter ? retryAfter.toISOString() : null,
     errorDetectedFrom: classification.detectedFrom,
   } as Parameters<typeof updateSession>[1]);
+
+  // Schedule auto-resume if recoverable AND opted in. Requires `config`
+  // so per-target precedence (cron job > employee > global) can be evaluated.
+  if (classification.recoverable && retryAfter && config) {
+    let employee: Employee | null = ctx?.employee ?? null;
+    if (!employee) {
+      const sess = getSession(sessionId);
+      if (sess?.employee) {
+        try {
+          employee = findEmployee(sess.employee, scanOrg()) ?? null;
+        } catch {
+          employee = null;
+        }
+      }
+    }
+    const resolved = resolveAutoResume({
+      kind: classification.kind,
+      config,
+      employee,
+      cronJob: ctx?.cronJob ?? null,
+    });
+    if (resolved.enabled) {
+      scheduleAutoResume({ sessionId, fireAt: retryAfter, nudge: resolved.nudge });
+    }
+  }
 
   return { classification, retryAfter };
 }
@@ -899,6 +928,43 @@ export class SessionManager {
     if (session) {
       deleteSession(session.id);
       logger.info(`Deleted session ${session.id}`);
+    }
+  }
+
+  /**
+   * Dispatch a nudge message to a session in error/waiting state. Used by the
+   * auto-resume scheduler.
+   *
+   * Strategy: post to the gateway's own HTTP message endpoint so the existing
+   * dispatch path (queue + engine.run + WebSocket emits) runs unchanged.
+   */
+  async dispatchNudge(sessionId: string, nudge: string): Promise<void> {
+    const session = getSession(sessionId);
+    if (!session) {
+      logger.warn(`[dispatchNudge] session ${sessionId} not found — skipping nudge`);
+      return;
+    }
+
+    const port = this.config.gateway?.port ?? 7777;
+    const host = this.config.gateway?.host ?? "127.0.0.1";
+    const url = `http://${host}:${port}/api/sessions/${encodeURIComponent(sessionId)}/message`;
+
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: nudge }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error(`HTTP ${resp.status} ${resp.statusText}: ${text.slice(0, 200)}`);
+      }
+      logger.info(`[dispatchNudge] session=${sessionId} nudge dispatched via HTTP`);
+    } catch (err) {
+      logger.error(
+        `[dispatchNudge] failed for session=${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
     }
   }
 

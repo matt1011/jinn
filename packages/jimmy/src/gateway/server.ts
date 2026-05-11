@@ -10,6 +10,7 @@ import { loadConfig } from "../shared/config.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
+import { setAutoResumeDispatcher, startAutoResumer, stopAutoResumer } from "../sessions/autoResumer.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
 import { GeminiEngine } from "../engines/gemini.js";
@@ -702,6 +703,14 @@ export async function startGateway(
     });
   });
 
+  // Wire the auto-resume scheduler. Dispatcher posts a nudge message back to
+  // this gateway via the existing /api/sessions/:id/message path so the regular
+  // queue + engine.run flow runs unchanged.
+  setAutoResumeDispatcher(async (sessionId, nudge) => {
+    await sessionManager.dispatchNudge(sessionId, nudge);
+  });
+  startAutoResumer();
+
   // Notify connected WebSocket clients about interrupted sessions available for resume
   if (resumable.length > 0) {
     // Small delay to let WebSocket clients connect after server starts
@@ -762,6 +771,9 @@ export async function startGateway(
 
     // Stop cron scheduler
     stopScheduler();
+
+    // Stop auto-resume scheduler
+    stopAutoResumer();
 
     // Stop connectors
     for (const connector of connectors) {
