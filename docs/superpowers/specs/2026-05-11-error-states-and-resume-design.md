@@ -196,16 +196,21 @@ interface JinnConfig {
 
 ### SQLite migration — `sessions/registry.ts`
 
-Add columns to the sessions table (all NULL-defaulted; no data backfill needed):
+Use the existing in-code idempotent migration pattern. `registry.ts` already exposes `migrateSessionsSchema(db)` which inspects `PRAGMA table_info(sessions)` and applies `ALTER TABLE ADD COLUMN` for any column missing from a hardcoded list. Extend that list with the four new columns:
 
-```sql
-ALTER TABLE sessions ADD COLUMN error_kind TEXT;
-ALTER TABLE sessions ADD COLUMN error_recoverable INTEGER;
-ALTER TABLE sessions ADD COLUMN error_retry_after TEXT;
-ALTER TABLE sessions ADD COLUMN error_detected_from TEXT;
+```typescript
+const missingColumns: Array<[string, string, string?]> = [
+  // ... existing entries (title, parent_session_id, connector, session_key, ...) ...
+  ['error_kind', 'TEXT'],
+  ['error_recoverable', 'INTEGER'],
+  ['error_retry_after', 'TEXT'],
+  ['error_detected_from', 'TEXT'],
+];
 ```
 
-Migration script lives at `packages/jimmy/template/migrations/0.11.0/01-error-classification-columns.sql` following the existing version-keyed migration pattern (current released version is 0.10.0). The companion `02-auto-resume-queue.sql` creates the queue table described under Auto-Resume Scheduler below.
+For the new `auto_resume_queue` table, add a `CREATE TABLE IF NOT EXISTS` block alongside the existing ones (the same pattern used for `queue_items`, `goals`, `budget_events`). No version-folder SQL files; the schema is owned by `registry.ts` and re-applied on every gateway start (idempotent).
+
+Jinn's separate `jinn migrate` CLI (in `cli/migrate.ts`) is for migrating user-data files (CLAUDE.md, skills, etc.) at release boundaries, not SQLite schema — that distinction is intentional and we keep it.
 
 ## Auto-Resume Scheduler
 
