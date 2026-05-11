@@ -160,6 +160,11 @@ export interface Session {
   createdAt: string;
   lastActivity: string;
   lastError: string | null;
+  // NEW — populated when status === "error" or "waiting"
+  errorKind?: import("./rateLimit.js").ErrorKind;
+  errorRecoverable?: boolean;       // denormalized for indexed lookup; always equals RECOVERABLE_KINDS.has(errorKind)
+  errorRetryAfter?: string | null;  // ISO-8601, already includes +2 min buffer
+  errorDetectedFrom?: "engine_result" | "process_exit" | "manual";
 }
 
 export interface Goal {
@@ -187,6 +192,9 @@ export interface CronJob {
   employee?: string;
   prompt: string;
   delivery?: CronDelivery;
+  // NEW — auto-resume opt-in
+  autoResumeOnUsageCap?: boolean;
+  autoResumeNudge?: string;
 }
 
 export interface CronDelivery {
@@ -218,6 +226,9 @@ export interface Employee {
   reportsTo?: string | string[];
   /** Services this employee provides to the org */
   provides?: ServiceDeclaration[];
+  // NEW — auto-resume opt-in (overrides global, overridden by cron job)
+  autoResumeOnUsageCap?: boolean;
+  autoResumeNudge?: string;
 }
 
 /** A service that an employee can provide to other employees/departments. */
@@ -384,9 +395,9 @@ export interface JinnConfig {
   gateway: { port: number; host: string; streaming?: boolean };
   engines: {
     default: "claude" | "codex" | "gemini";
-    claude: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
-    codex: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
-    gemini?: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string };
+    claude: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string; resetWindow?: { rate_limited_min?: number; usage_cap_min?: number } };
+    codex: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string; resetWindow?: { rate_limited_min?: number; usage_cap_min?: number } };
+    gemini?: { bin: string; model: string; effortLevel?: string; childEffortOverride?: string; resetWindow?: { rate_limited_min?: number; usage_cap_min?: number } };
   };
   connectors: Record<string, any> & {
     web?: WebConnectorConfig;
@@ -407,6 +418,9 @@ export interface JinnConfig {
     rateLimitStrategy?: "wait" | "fallback";
     /** Engine to use when rateLimitStrategy="fallback". Default: "codex" */
     fallbackEngine?: "codex";
+    autoResumeOnRateLimit?: boolean;     // default true
+    autoResumeOnUsageCap?: boolean;      // default false
+    autoResumeNudge?: string;            // default "keep going"
   };
   cron?: {
     defaultDelivery?: CronDelivery;
