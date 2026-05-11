@@ -126,5 +126,12 @@ export function classifyError(result: EngineResult, _engineName: string): ErrorC
     return { kind: "rate_limited", recoverable: true, retryAfter: null, originalMessage, detectedFrom: "engine_result" };
   }
 
-  return { kind: "unknown", recoverable: false, retryAfter: null, originalMessage, detectedFrom: "engine_result" };
+  // Reuse existing dead-session detector for consistency.
+  if (isDeadSessionError(result)) {
+    return { kind: "dead_session", recoverable: false, retryAfter: null, originalMessage, detectedFrom: "engine_result" };
+  }
+
+  // Any remaining error with any cost or any turns recorded is treated as a crash;
+  // zero-work non-rate-limit errors are caught by isDeadSessionError above.
+  return { kind: "engine_crashed", recoverable: false, retryAfter: null, originalMessage, detectedFrom: "engine_result" };
 }

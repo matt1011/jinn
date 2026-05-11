@@ -19,13 +19,6 @@ describe("classifyError — constants and contract", () => {
     expect([...RECOVERABLE_KINDS].sort()).toEqual(["rate_limited", "usage_cap"]);
   });
 
-  it("returns unknown for an unrecognised error string", () => {
-    const result = baseResult({ error: "totally novel failure", cost: 1, numTurns: 1 });
-    const c = classifyError(result, "codex");
-    expect(c.kind).toBe("unknown");
-    expect(c.recoverable).toBe(false);
-  });
-
   it("returns unknown when there is no error at all", () => {
     // Omit `error` entirely — it's optional (undefined).
     const c = classifyError(baseResult({}), "codex");
@@ -58,7 +51,11 @@ describe("classifyError — rate_limited", () => {
       baseResult({ error: "exceeded the request body limit of 10 MB" }),
       "codex",
     );
-    expect(c.kind).toBe("unknown");
+    // With Task 3 semantics, a zero-work non-rate-limit error falls into
+    // dead_session (the isDeadSessionError heuristic). The key assertion
+    // here is that it is NOT rate_limited.
+    expect(c.kind).not.toBe("rate_limited");
+    expect(c.kind).toBe("dead_session");
   });
 
   it("still classifies 'exceeded the rate limit' as rate_limited", () => {
@@ -96,5 +93,64 @@ describe("classifyError — usage_cap", () => {
       "codex",
     );
     expect(c.kind).toBe("usage_cap");
+  });
+});
+
+describe("classifyError — dead_session", () => {
+  it("classifies zero-cost zero-turn error with no rate-limit signal as dead_session", () => {
+    const c = classifyError(
+      baseResult({ error: "Error during execution: session not found" }),
+      "codex",
+    );
+    expect(c.kind).toBe("dead_session");
+    expect(c.recoverable).toBe(false);
+  });
+
+  it("classifies 'session expired' as dead_session", () => {
+    const c = classifyError(baseResult({ error: "session expired" }), "codex");
+    expect(c.kind).toBe("dead_session");
+  });
+});
+
+describe("classifyError — engine_crashed", () => {
+  it("classifies non-zero-work error with no recognized pattern as engine_crashed", () => {
+    const c = classifyError(
+      baseResult({ error: "segmentation fault in subprocess", cost: 0.02, numTurns: 3 }),
+      "codex",
+    );
+    expect(c.kind).toBe("engine_crashed");
+    expect(c.recoverable).toBe(false);
+  });
+
+  it("classifies an unrecognised error string with non-zero work as engine_crashed", () => {
+    const result = baseResult({ error: "totally novel failure", cost: 1, numTurns: 1 });
+    const c = classifyError(result, "codex");
+    expect(c.kind).toBe("engine_crashed");
+    expect(c.recoverable).toBe(false);
+  });
+
+  it("classifies cost>0 numTurns=0 error as engine_crashed", () => {
+    const c = classifyError(
+      baseResult({ error: "engine died after billing started", cost: 0.05, numTurns: 0 }),
+      "codex",
+    );
+    expect(c.kind).toBe("engine_crashed");
+  });
+
+  it("classifies cost=0 numTurns>0 error as engine_crashed", () => {
+    const c = classifyError(
+      baseResult({ error: "engine died after one turn", cost: 0, numTurns: 1 }),
+      "codex",
+    );
+    expect(c.kind).toBe("engine_crashed");
+  });
+
+  it("does NOT classify cost>0 session-not-found error as dead_session (preserves real-session IDs)", () => {
+    const c = classifyError(
+      baseResult({ error: "session not found", cost: 0.01, numTurns: 1 }),
+      "codex",
+    );
+    expect(c.kind).not.toBe("dead_session");
+    expect(c.kind).toBe("engine_crashed");
   });
 });
