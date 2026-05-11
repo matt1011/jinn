@@ -104,3 +104,35 @@ export function useDuplicateSession() {
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.sessions.all }),
   })
 }
+
+export function useResumeSession() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, nudge, preserveEngineSession }: { id: string; nudge?: string; preserveEngineSession?: boolean }) =>
+      api.resumeSession(id, { nudge, preserveEngineSession }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: queryKeys.sessions.all })
+      qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(vars.id) })
+      qc.invalidateQueries({ queryKey: ['recoverable-sessions'] })
+    },
+  })
+}
+
+export function useCancelAutoResume() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (sessionId: string) => api.cancelAutoResume(sessionId),
+    onSuccess: (_data, sessionId) => {
+      qc.invalidateQueries({ queryKey: queryKeys.sessions.detail(sessionId) })
+      qc.invalidateQueries({ queryKey: ['recoverable-sessions'] })
+    },
+  })
+}
+
+export function useRecoverableSessions() {
+  return useQuery({
+    queryKey: ['recoverable-sessions'],
+    queryFn: () => api.listRecoverableSessions(),
+    refetchInterval: 30_000,
+  })
+}

@@ -55,6 +55,44 @@ export interface OrgData {
   hierarchy: OrgHierarchy;
 }
 
+export interface Session {
+  id: string;
+  engine: string;
+  engineSessionId: string | null;
+  source: string;
+  sourceRef: string;
+  connector: string | null;
+  sessionKey: string;
+  replyContext: Record<string, unknown> | null;
+  messageId: string | null;
+  employee: string | null;
+  model: string | null;
+  title: string | null;
+  parentSessionId: string | null;
+  status: "idle" | "running" | "error" | "waiting" | "paused";
+  transportState?: "idle" | "queued" | "running" | "error" | "waiting" | "paused";
+  queueDepth?: number;
+  createdAt: string;
+  lastActivity: string;
+  lastError: string | null;
+  errorKind?: "rate_limited" | "usage_cap" | "dead_session" | "engine_crashed" | "unknown";
+  errorRecoverable?: boolean;
+  errorRetryAfter?: string | null;
+  errorDetectedFrom?: "engine_result" | "process_exit" | "manual";
+}
+
+export interface RecoverableSessionSummary {
+  sessionId: string;
+  title: string | null;
+  engine: string;
+  employee: string | null;
+  errorKind: string;
+  errorRetryAfter: string | null;
+  autoResumeScheduledAt: string | null;
+  lastErrorPreview: string;
+  source: string;
+}
+
 const BASE =
   typeof window !== "undefined"
     ? window.location.origin
@@ -142,6 +180,12 @@ export const api = {
     post<{ status: string; sessionId: string }>(`/api/sessions/${id}/stop`, {}),
   resetSession: (id: string) =>
     post<{ status: string; sessionId: string }>(`/api/sessions/${id}/reset`, {}),
+  resumeSession: (id: string, body: { nudge?: string; preserveEngineSession?: boolean } = {}) =>
+    post<Session>(`/api/sessions/${id}/resume`, body),
+  listRecoverableSessions: () =>
+    get<RecoverableSessionSummary[]>(`/api/sessions/recoverable`),
+  cancelAutoResume: (sessionId: string) =>
+    post<{ ok: true }>(`/api/sessions/${sessionId}/resume/cancel`, {}),
   getCronJobs: () => get<Record<string, unknown>[]>("/api/cron"),
   getCronRuns: (id: string) => get<Record<string, unknown>[]>(`/api/cron/${id}/runs`),
   updateCronJob: (id: string, data: Record<string, unknown>) =>
