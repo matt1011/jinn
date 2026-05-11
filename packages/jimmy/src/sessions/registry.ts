@@ -95,6 +95,13 @@ function rowToSession(row: Record<string, unknown>): Session {
     createdAt: row.created_at as string,
     lastActivity: row.last_activity as string,
     lastError: (row.last_error as string) ?? null,
+    errorKind: (row.error_kind as Session['errorKind']) ?? undefined,
+    errorRecoverable:
+      row.error_recoverable === null || row.error_recoverable === undefined
+        ? undefined
+        : Boolean(row.error_recoverable),
+    errorRetryAfter: (row.error_retry_after as string) ?? null,
+    errorDetectedFrom: (row.error_detected_from as Session['errorDetectedFrom']) ?? undefined,
   };
 }
 
@@ -312,6 +319,10 @@ export interface UpdateSessionFields {
   lastActivity?: string;
   lastError?: string | null;
   title?: string;
+  errorKind?: Session['errorKind'] | null;
+  errorRecoverable?: boolean | null;
+  errorRetryAfter?: string | null;
+  errorDetectedFrom?: Session['errorDetectedFrom'] | null;
 }
 
 export function updateSession(id: string, updates: UpdateSessionFields): Session | undefined {
@@ -358,6 +369,22 @@ export function updateSession(id: string, updates: UpdateSessionFields): Session
   if (updates.title !== undefined) {
     sets.push('title = ?');
     values.push(updates.title);
+  }
+  if (updates.errorKind !== undefined) {
+    sets.push('error_kind = ?');
+    values.push(updates.errorKind ?? null);
+  }
+  if (updates.errorRecoverable !== undefined) {
+    sets.push('error_recoverable = ?');
+    values.push(updates.errorRecoverable === null ? null : (updates.errorRecoverable ? 1 : 0));
+  }
+  if (updates.errorRetryAfter !== undefined) {
+    sets.push('error_retry_after = ?');
+    values.push(updates.errorRetryAfter);
+  }
+  if (updates.errorDetectedFrom !== undefined) {
+    sets.push('error_detected_from = ?');
+    values.push(updates.errorDetectedFrom ?? null);
   }
 
   if (sets.length === 0) return getSession(id);
