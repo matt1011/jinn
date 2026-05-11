@@ -1,15 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Card,
   CardContent,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { api } from "@/lib/api";
+import { api, type Session as ApiSession } from "@/lib/api";
 import { useSettings } from "@/app/settings-provider";
 
-interface Session {
+// Local view-model: superset of api.Session fields needed for rendering.
+// Allows callers that pass legacy session shapes to still work, while
+// preferring the central api.Session contract.
+type Session = Partial<ApiSession> & {
   id: string;
   engine: string;
   source: string;
@@ -17,11 +21,9 @@ interface Session {
   sessionKey: string;
   employee: string | null;
   title: string | null;
-  status: "idle" | "running" | "error";
-  transportState?: "idle" | "queued" | "running" | "error";
-  queueDepth?: number;
+  status: ApiSession["status"];
   lastActivity: string;
-}
+};
 
 const statusVariant: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   idle: "secondary",
@@ -49,14 +51,30 @@ function relativeTime(iso: string): string {
   return `${days}d ago`;
 }
 
+// `api.listSessions` is the canonical fetcher. If it isn't present on the
+// (mocked) api surface, fall back to the legacy `getSessions` endpoint shape.
+async function fetchSessions(): Promise<Session[]> {
+  const apiAny = api as unknown as {
+    listSessions?: () => Promise<Session[]>;
+    getSessions?: () => Promise<Session[]>;
+  };
+  if (typeof apiAny.listSessions === "function") {
+    return apiAny.listSessions();
+  }
+  if (typeof apiAny.getSessions === "function") {
+    return apiAny.getSessions();
+  }
+  return [];
+}
+
 export function SessionList({
-  sessions,
-  selectedId,
+  sessions: sessionsProp,
+  selectedId = null,
   onSelect,
   onDeleted,
 }: {
-  sessions: Session[];
-  selectedId: string | null;
+  sessions?: Session[];
+  selectedId?: string | null;
   onSelect: (id: string) => void;
   onDeleted?: () => void;
 }) {
@@ -64,6 +82,25 @@ export function SessionList({
   const portalName = settings.portalName ?? "Jinn";
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  const [recoverableOnly, setRecoverableOnly] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("sessions-recoverable-only") === "1";
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("sessions-recoverable-only", recoverableOnly ? "1" : "0");
+  }, [recoverableOnly]);
+
+  // Self-fetch when no sessions prop was provided.
+  const fetchedQuery = useQuery({
+    queryKey: ["sessions", "list"],
+    queryFn: fetchSessions,
+    enabled: sessionsProp === undefined,
+  });
+
+  const sessions: Session[] = sessionsProp ?? fetchedQuery.data ?? [];
 
   function handleContextMenu(e: React.MouseEvent, sessionId: string) {
     e.preventDefault();
@@ -80,29 +117,63 @@ export function SessionList({
     try {
       await api.deleteSession(confirmDelete);
       onDeleted?.();
+      if (sessionsProp === undefined) {
+        await fetchedQuery.refetch();
+      }
     } catch { /* ignore */ }
     setConfirmDelete(null);
   }
 
-  if (sessions.length === 0) {
+  const visibleSessions = sessions.filter(
+    (s) => !recoverableOnly || s.errorRecoverable === true,
+  );
+
+  const toolbar = (
+    <div className="flex items-center gap-[var(--space-2)] mb-[var(--space-2)]">
+      <button
+        type="button"
+        data-testid="filter-recoverable"
+        onClick={() => setRecoverableOnly((v) => !v)}
+        style={{
+          padding: "4px 10px",
+          border: "1px solid var(--separator, #ccc)",
+          borderRadius: 12,
+          background: recoverableOnly ? "#d97706" : "transparent",
+          color: recoverableOnly ? "#fff" : "inherit",
+          fontSize: 11,
+          cursor: "pointer",
+        }}
+        title="Show only sessions with a recoverable error"
+        aria-pressed={recoverableOnly}
+      >
+        Recoverable only
+      </button>
+    </div>
+  );
+
+  if (visibleSessions.length === 0) {
     return (
-      <Card>
-        <CardContent>
-          <div className="text-center p-[var(--space-6)] text-[var(--text-tertiary)] text-[length:var(--text-body)]">
-            No sessions found
-          </div>
-        </CardContent>
-      </Card>
+      <>
+        {toolbar}
+        <Card>
+          <CardContent>
+            <div className="text-center p-[var(--space-6)] text-[var(--text-tertiary)] text-[length:var(--text-body)]">
+              No sessions found
+            </div>
+          </CardContent>
+        </Card>
+      </>
     );
   }
 
   return (
     <>
+      {toolbar}
       <div
         className="flex flex-col gap-[var(--space-3)]"
         onClick={() => setContextMenu(null)}
       >
-        {sessions.map((s) => (
+        {visibleSessions.map((s) => (
           <Card
             key={s.id}
             className="py-3 cursor-pointer transition-colors"
@@ -135,6 +206,22 @@ export function SessionList({
                     <Badge variant={statusVariant[s.status] ?? "secondary"}>
                       {statusLabel[s.transportState || s.status] || s.transportState || s.status}
                     </Badge>
+                    {s.errorKind && (
+                      <span
+                        data-testid="session-error-badge"
+                        style={{
+                          padding: "1px 6px",
+                          fontSize: 10,
+                          borderRadius: 4,
+                          background: "#d97706",
+                          color: "#fff",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.04em",
+                        }}
+                      >
+                        {String(s.errorKind).replace(/_/g, " ")}
+                      </span>
+                    )}
                   </div>
                   <div className="text-[length:var(--text-caption1)] text-[var(--text-tertiary)] flex gap-[var(--space-3)]">
                     <span>{s.connector || s.source}</span>
