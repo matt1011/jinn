@@ -71,4 +71,36 @@ describe("extractRetryAfter", () => {
     const lowerBound = FIXED_NOW.getTime() + 5 * 60_000;
     expect(result!.getTime()).toBeGreaterThanOrEqual(lowerBound);
   });
+
+  it("falls back to PROVIDER_RESET_DEFAULTS when no timestamp in text and config is provided", () => {
+    const config = {
+      jinn: { version: "0.10.0" },
+      gateway: { port: 7777, host: "127.0.0.1" },
+      engines: { default: "codex", codex: {}, claude: {}, gemini: {} },
+      connectors: {},
+      logging: { file: false, stdout: false, level: "info" },
+    } as unknown as import("../types.js").JinnConfig;
+
+    const result = extractRetryAfter("no timestamp here", "usage_cap", "codex", config);
+    expect(result).not.toBeNull();
+    const expected = FIXED_NOW.getTime() + 60 * 60_000 + BUFFER_MS;
+    expect(result!.getTime()).toBe(expected);
+  });
+
+  it("returns null when no timestamp AND no config supplied", () => {
+    const result = extractRetryAfter("no timestamp", "usage_cap", "codex");
+    expect(result).toBeNull();
+  });
+
+  it("returns null when kind is not recoverable, even with config", () => {
+    const config = {
+      jinn: { version: "0.10.0" },
+      gateway: { port: 7777, host: "127.0.0.1" },
+      engines: { default: "codex", codex: {}, claude: {}, gemini: {} },
+      connectors: {},
+      logging: { file: false, stdout: false, level: "info" },
+    } as unknown as import("../types.js").JinnConfig;
+    const result = extractRetryAfter("crashed somewhere", "engine_crashed", "codex", config);
+    expect(result).toBeNull();
+  });
 });

@@ -1,6 +1,21 @@
 import { describe, it, expect } from "vitest";
-import { classifyError, RECOVERABLE_KINDS, BUFFER_MS } from "../rateLimit.js";
-import type { EngineResult } from "../types.js";
+import { classifyError, RECOVERABLE_KINDS, BUFFER_MS, resolveResetFallback, PROVIDER_RESET_DEFAULTS } from "../rateLimit.js";
+import type { EngineResult, JinnConfig } from "../types.js";
+
+const minimalConfig = (): JinnConfig => {
+  return {
+    jinn: { version: "0.10.0" },
+    gateway: { port: 7777, host: "127.0.0.1" },
+    engines: {
+      default: "codex",
+      claude: {},
+      codex: {},
+      gemini: {},
+    } as JinnConfig["engines"],
+    connectors: {},
+    logging: { file: false, stdout: false, level: "info" },
+  } as unknown as JinnConfig;
+};
 
 const baseResult = (over: Partial<EngineResult> = {}): EngineResult => ({
   sessionId: "test-session",
@@ -152,5 +167,41 @@ describe("classifyError — engine_crashed", () => {
     );
     expect(c.kind).not.toBe("dead_session");
     expect(c.kind).toBe("engine_crashed");
+  });
+});
+
+describe("resolveResetFallback", () => {
+  it("returns hardcoded default when no config override", () => {
+    expect(resolveResetFallback("codex", "usage_cap", minimalConfig())).toBe(60);
+    expect(resolveResetFallback("claude", "usage_cap", minimalConfig())).toBe(300);
+    expect(resolveResetFallback("codex", "rate_limited", minimalConfig())).toBe(1);
+  });
+
+  it("config override beats hardcoded default", () => {
+    const overridden = minimalConfig();
+    (overridden.engines as unknown as Record<string, { resetWindow?: { usage_cap_min?: number; rate_limited_min?: number } }>).codex = {
+      resetWindow: { usage_cap_min: 90, rate_limited_min: 2 },
+    };
+    expect(resolveResetFallback("codex", "usage_cap", overridden)).toBe(90);
+    expect(resolveResetFallback("codex", "rate_limited", overridden)).toBe(2);
+  });
+
+  it("returns null for non-recoverable kinds", () => {
+    expect(resolveResetFallback("codex", "engine_crashed", minimalConfig())).toBeNull();
+    expect(resolveResetFallback("codex", "unknown", minimalConfig())).toBeNull();
+    expect(resolveResetFallback("codex", "dead_session", minimalConfig())).toBeNull();
+  });
+
+  it("returns null for unknown engine names", () => {
+    expect(resolveResetFallback("nonsense-engine", "usage_cap", minimalConfig())).toBeNull();
+  });
+
+  it("PROVIDER_RESET_DEFAULTS includes the documented engines and kinds", () => {
+    expect(PROVIDER_RESET_DEFAULTS.codex.rate_limited).toBe(1);
+    expect(PROVIDER_RESET_DEFAULTS.codex.usage_cap).toBe(60);
+    expect(PROVIDER_RESET_DEFAULTS.claude.rate_limited).toBe(5);
+    expect(PROVIDER_RESET_DEFAULTS.claude.usage_cap).toBe(300);
+    expect(PROVIDER_RESET_DEFAULTS.gemini.rate_limited).toBe(5);
+    expect(PROVIDER_RESET_DEFAULTS.gemini.usage_cap).toBe(60);
   });
 });

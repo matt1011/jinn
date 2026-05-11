@@ -1,4 +1,4 @@
-import type { EngineResult } from "./types.js";
+import type { EngineResult, JinnConfig } from "./types.js";
 
 // Disambiguated patterns — usage-cap is checked first because some provider
 // messages contain both "rate limit" and "usage limit" phrasings.
@@ -153,31 +153,40 @@ const TIME_OF_DAY_RE = /\btry again at\s+(\d{1,2}):(\d{2})\s*(AM|PM)?\b/i;
  */
 export function extractRetryAfter(
   errorText: string,
-  _kind: ErrorKind,
-  _engineName: string,
+  kind: ErrorKind,
+  engineName: string,
+  config?: JinnConfig,
 ): Date | null {
-  if (!errorText) return null;
+  if (errorText) {
+    const isoMatch = errorText.match(ISO_RE);
+    if (isoMatch) {
+      const parsed = new Date(isoMatch[0]);
+      if (!Number.isNaN(parsed.getTime())) {
+        return clampFutureWithBuffer(parsed);
+      }
+    }
 
-  const isoMatch = errorText.match(ISO_RE);
-  if (isoMatch) {
-    const parsed = new Date(isoMatch[0]);
-    if (!Number.isNaN(parsed.getTime())) {
-      return clampFutureWithBuffer(parsed);
+    const todMatch = errorText.match(TIME_OF_DAY_RE);
+    if (todMatch) {
+      const hour12 = parseInt(todMatch[1], 10);
+      const minute = parseInt(todMatch[2], 10);
+      const ampm = (todMatch[3] || "").toUpperCase();
+      let hour24 = hour12;
+      if (ampm === "PM" && hour12 < 12) hour24 = hour12 + 12;
+      if (ampm === "AM" && hour12 === 12) hour24 = 0;
+      const now = new Date();
+      const candidate = new Date(now);
+      candidate.setHours(hour24, minute, 0, 0);
+      return clampFutureWithBuffer(candidate);
     }
   }
 
-  const todMatch = errorText.match(TIME_OF_DAY_RE);
-  if (todMatch) {
-    const hour12 = parseInt(todMatch[1], 10);
-    const minute = parseInt(todMatch[2], 10);
-    const ampm = (todMatch[3] || "").toUpperCase();
-    let hour24 = hour12;
-    if (ampm === "PM" && hour12 < 12) hour24 = hour12 + 12;
-    if (ampm === "AM" && hour12 === 12) hour24 = 0;
-    const now = new Date();
-    const candidate = new Date(now);
-    candidate.setHours(hour24, minute, 0, 0);
-    return clampFutureWithBuffer(candidate);
+  // No explicit timestamp — fall back to PROVIDER_RESET_DEFAULTS via config.
+  if (config) {
+    const minutes = resolveResetFallback(engineName, kind, config);
+    if (minutes !== null) {
+      return new Date(Date.now() + minutes * 60_000 + BUFFER_MS);
+    }
   }
 
   return null;
@@ -188,4 +197,48 @@ function clampFutureWithBuffer(target: Date): Date {
   const minFuture = now + Math.max(BUFFER_MS, 5 * 60_000);
   const withBuffer = target.getTime() + BUFFER_MS;
   return new Date(Math.max(withBuffer, minFuture));
+}
+
+/**
+ * Fallback reset-window minutes per engine per recoverable kind.
+ *
+ * Heuristics used when the provider's error message doesn't include an explicit
+ * retry-at timestamp. Specific provider messages (parsed by extractRetryAfter)
+ * always win when available.
+ *
+ * Claude usage_cap default of 300 reflects the 5-hour Max-plan rolling window.
+ * Codex defaults are conservative; usage-cap errors usually include explicit times.
+ */
+export const PROVIDER_RESET_DEFAULTS: Record<
+  string,
+  Partial<Record<ErrorKind, number>>
+> = {
+  codex: { rate_limited: 1, usage_cap: 60 },
+  claude: { rate_limited: 5, usage_cap: 300 },
+  gemini: { rate_limited: 5, usage_cap: 60 },
+};
+
+/**
+ * Resolve fallback reset minutes for an engine+kind, honouring
+ * `config.engines.<name>.resetWindow.<kind>_min` overrides.
+ *
+ * Returns null for non-recoverable kinds (callers should not schedule a resume),
+ * or when the engine is unknown.
+ */
+export function resolveResetFallback(
+  engineName: string,
+  kind: ErrorKind,
+  config: JinnConfig,
+): number | null {
+  if (!RECOVERABLE_KINDS.has(kind)) return null;
+
+  const cfgKey = kind === "rate_limited" ? "rate_limited_min" : "usage_cap_min";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const engineCfg = (config.engines as any)?.[engineName] as
+    | { resetWindow?: Record<string, number> }
+    | undefined;
+  const override = engineCfg?.resetWindow?.[cfgKey];
+  if (typeof override === "number" && Number.isFinite(override)) return override;
+
+  return PROVIDER_RESET_DEFAULTS[engineName]?.[kind] ?? null;
 }
