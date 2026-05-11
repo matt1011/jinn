@@ -93,12 +93,10 @@ test.describe("Recoverable session resume flow", () => {
     await request.delete(`${GATEWAY}/api/sessions/${session.id}`).catch(() => {});
   });
 
-  // The error-chip UI (SessionDetail component) is not currently wired into any
-  // Next.js route — `/sessions/[id]` does not exist and `/chat` renders ChatPane,
-  // which does not include the chip. The component-level coverage lives in
+  // SessionDetail is mounted at /sessions/[id] (packages/web/src/app/sessions/[id]/page.tsx),
+  // so this flow is reachable in the running web app. Component-level coverage lives in
   // `packages/web/src/components/sessions/__tests__/session-detail-resume.test.tsx`.
-  // Re-enable this once SessionDetail is mounted on a real route.
-  test.skip("UI: error chip opens modal; Resume now dispatches and dismisses (TODO: mount SessionDetail on a route)", async ({
+  test("UI: error chip opens modal; Resume now dispatches and dismisses", async ({
     page,
     request,
   }) => {

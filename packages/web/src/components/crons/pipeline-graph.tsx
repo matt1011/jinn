@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { describeCron } from "@/lib/cron-utils"
 import { CronLastRunIndicator } from "./cron-last-run-indicator"
 
@@ -8,6 +9,7 @@ interface LatestRun {
   durationMs: number
   errorKind?: string
   autoResumeScheduledAt?: string | null
+  sessionId?: string | null
 }
 
 interface CronJob {
@@ -114,12 +116,28 @@ function CronCardGroup({ crons, label }: { crons: CronJob[]; label: string }) {
               {/* Last run indicator */}
               {cron.latestRun && (
                 <div className="mt-1.5">
-                  <CronLastRunIndicator
-                    status={cron.latestRun.status}
-                    durationMs={cron.latestRun.durationMs}
-                    errorKind={cron.latestRun.errorKind}
-                    autoResumeScheduledAt={cron.latestRun.autoResumeScheduledAt}
-                  />
+                  {cron.latestRun.sessionId ? (
+                    <Link
+                      href={`/sessions/${cron.latestRun.sessionId}${
+                        cron.latestRun.errorKind ? "?resume=1" : ""
+                      }`}
+                      className="inline-block no-underline"
+                    >
+                      <CronLastRunIndicator
+                        status={cron.latestRun.status}
+                        durationMs={cron.latestRun.durationMs}
+                        errorKind={cron.latestRun.errorKind}
+                        autoResumeScheduledAt={cron.latestRun.autoResumeScheduledAt}
+                      />
+                    </Link>
+                  ) : (
+                    <CronLastRunIndicator
+                      status={cron.latestRun.status}
+                      durationMs={cron.latestRun.durationMs}
+                      errorKind={cron.latestRun.errorKind}
+                      autoResumeScheduledAt={cron.latestRun.autoResumeScheduledAt}
+                    />
+                  )}
                 </div>
               )}
             </div>

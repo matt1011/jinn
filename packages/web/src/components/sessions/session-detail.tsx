@@ -13,6 +13,22 @@ import { useSettings } from "@/app/settings-provider";
 import { useResetSession } from "@/hooks/use-sessions";
 import { ResumeModal } from "./resume-modal";
 
+// Read ?resume=1 from the URL without coupling to next/navigation directly.
+// This keeps the component testable outside of a Next.js app router context.
+function useResumeQueryParam(): boolean {
+  const [resume, setResume] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      setResume(params.get("resume") === "1");
+    } catch {
+      setResume(false);
+    }
+  }, []);
+  return resume;
+}
+
 const statusVariant: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   idle: "secondary",
   queued: "outline",
@@ -56,12 +72,21 @@ export function SessionDetail({
   const [resumeOpen, setResumeOpen] = useState(false);
   const showResumeChip = !!session.errorKind && session.errorRecoverable === true;
   const defaultNudge = "keep going";
+  const resumeQueryParam = useResumeQueryParam();
 
   useEffect(() => {
     api.getSessionChildren(session.id)
       .then((data) => setChildren(data as unknown as Session[]))
       .catch(() => setChildren([]));
   }, [session.id]);
+
+  // Deep-link contract: cron indicator links to /sessions/:id?resume=1, which
+  // should auto-open the ResumeModal on mount when the session is recoverable.
+  useEffect(() => {
+    if (resumeQueryParam && showResumeChip) {
+      setResumeOpen(true);
+    }
+  }, [resumeQueryParam, showResumeChip]);
 
   return (
     <Card>
