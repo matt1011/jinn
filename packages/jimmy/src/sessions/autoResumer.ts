@@ -15,6 +15,27 @@ let tickHandle: NodeJS.Timeout | null = null;
 let dispatchFn: ((sessionId: string, nudge: string) => Promise<void>) | null = null;
 let tickInFlight = false;
 
+type EventEmitter = (event: string, payload: Record<string, unknown>) => void;
+let emitFn: EventEmitter | null = null;
+
+/** Inject the event emitter. Called by gateway/server.ts at boot. */
+export function setAutoResumeEmitter(fn: EventEmitter): void {
+  emitFn = fn;
+}
+
+function emit(event: string, payload: Record<string, unknown>): void {
+  if (emitFn) {
+    try {
+      emitFn(event, payload);
+    } catch (err) {
+      // Don't let emitter errors break dispatch
+      logger.warn(
+        `[autoResumer] event emit failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
 export interface AutoResumeResolution {
   enabled: boolean;
   nudge: string;
@@ -88,12 +109,17 @@ export function scheduleAutoResume(opts: {
   logger.info(
     `[autoResumer] scheduled session=${opts.sessionId} fireAt=${opts.fireAt.toISOString()} nudge="${opts.nudge.slice(0, 40)}"`,
   );
+  emit("session:auto_resume_scheduled", {
+    sessionId: opts.sessionId,
+    fireAt: opts.fireAt.toISOString(),
+  });
 }
 
 /** Cancel a pending auto-resume for a session, if any. */
 export function cancelScheduledAutoResume(sessionId: string): void {
   cancelAutoResume(sessionId);
   logger.info(`[autoResumer] cancelled session=${sessionId}`);
+  emit("session:auto_resume_cancelled", { sessionId });
 }
 
 /** Inject the dispatch function. Called by gateway/server.ts at boot. */
@@ -177,7 +203,22 @@ async function tick(): Promise<void> {
       logger.info(
         `[autoResumer] firing session=${row.sessionId} nudge="${row.nudge.slice(0, 40)}"`,
       );
+      emit("session:auto_resume_firing", { sessionId: row.sessionId });
       await dispatchFn(row.sessionId, row.nudge);
+      emit("session:auto_resume_succeeded", { sessionId: row.sessionId });
+
+      // Notify parent session for cron-spawned children
+      if (session.parentSessionId) {
+        try {
+          const { notifyRateLimitResumed } = await import("./callbacks.js");
+          notifyRateLimitResumed(session);
+        } catch (err) {
+          logger.warn(
+            `[autoResumer] notifyRateLimitResumed failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
       deleteAutoResume(row.id);
     } catch (err) {
       logger.error(

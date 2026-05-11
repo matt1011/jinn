@@ -10,7 +10,7 @@ import { loadConfig } from "../shared/config.js";
 import { configureLogger, logger } from "../shared/logger.js";
 import { initDb, recoverStaleSessions, recoverStaleQueueItems, getInterruptedSessions, listSessions, updateSession } from "../sessions/registry.js";
 import { SessionManager, type RouteOptions } from "../sessions/manager.js";
-import { setAutoResumeDispatcher, startAutoResumer, stopAutoResumer } from "../sessions/autoResumer.js";
+import { setAutoResumeDispatcher, setAutoResumeEmitter, startAutoResumer, stopAutoResumer } from "../sessions/autoResumer.js";
 import { ClaudeEngine } from "../engines/claude.js";
 import { CodexEngine } from "../engines/codex.js";
 import { GeminiEngine } from "../engines/gemini.js";
@@ -708,6 +708,9 @@ export async function startGateway(
   // queue + engine.run flow runs unchanged.
   setAutoResumeDispatcher(async (sessionId, nudge) => {
     await sessionManager.dispatchNudge(sessionId, nudge);
+  });
+  setAutoResumeEmitter((event, payload) => {
+    emit(event, payload);
   });
   startAutoResumer();
 

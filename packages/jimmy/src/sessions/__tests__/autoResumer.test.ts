@@ -17,6 +17,7 @@ import {
   scheduleAutoResume,
   cancelScheduledAutoResume,
   setAutoResumeDispatcher,
+  setAutoResumeEmitter,
   runOneTickForTest,
 } from "../autoResumer.js";
 import type { JinnConfig, CronJob, Employee } from "../../shared/types.js";
@@ -308,5 +309,83 @@ describe("autoResumer tick() — dispatches due rows", () => {
 
     expect(dispatched).toHaveLength(0);
     expect(getAutoResumeForSession("deleted-session-id")).toBeNull();
+  });
+});
+
+describe("autoResumer — emits events", () => {
+  it("emits scheduled, firing, succeeded events around a successful dispatch", async () => {
+    const events: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    setAutoResumeEmitter((event, payload) => events.push({ event, payload }));
+    setAutoResumeDispatcher(async () => undefined);
+
+    const s = createSession({
+      engine: "codex",
+      source: "cron",
+      sourceRef: "ev-1",
+      sessionKey: "ev-1",
+      connector: "cron",
+    } as Parameters<typeof createSession>[0]);
+    updateSession(s.id, {
+      status: "error",
+      lastError: "x",
+    } as Parameters<typeof updateSession>[1]);
+
+    scheduleAutoResume({
+      sessionId: s.id,
+      fireAt: new Date(Date.now() - 1000),
+      nudge: "go",
+    });
+
+    expect(
+      events.find(
+        (e) =>
+          e.event === "session:auto_resume_scheduled" &&
+          e.payload.sessionId === s.id,
+      ),
+    ).toBeDefined();
+
+    await runOneTickForTest();
+
+    expect(
+      events.find(
+        (e) =>
+          e.event === "session:auto_resume_firing" &&
+          e.payload.sessionId === s.id,
+      ),
+    ).toBeDefined();
+    expect(
+      events.find(
+        (e) =>
+          e.event === "session:auto_resume_succeeded" &&
+          e.payload.sessionId === s.id,
+      ),
+    ).toBeDefined();
+  });
+
+  it("emits cancelled event on manual cancel", () => {
+    const events: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    setAutoResumeEmitter((event, payload) => events.push({ event, payload }));
+
+    const s = createSession({
+      engine: "codex",
+      source: "cron",
+      sourceRef: "ev-2",
+      sessionKey: "ev-2",
+      connector: "cron",
+    } as Parameters<typeof createSession>[0]);
+    scheduleAutoResume({
+      sessionId: s.id,
+      fireAt: new Date(Date.now() + 60_000),
+      nudge: "x",
+    });
+    cancelScheduledAutoResume(s.id);
+
+    expect(
+      events.find(
+        (e) =>
+          e.event === "session:auto_resume_cancelled" &&
+          e.payload.sessionId === s.id,
+      ),
+    ).toBeDefined();
   });
 });
