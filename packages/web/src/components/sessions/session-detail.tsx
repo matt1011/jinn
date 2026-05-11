@@ -8,31 +8,10 @@ import {
   CardContent,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { api } from "@/lib/api";
+import { api, type Session } from "@/lib/api";
 import { useSettings } from "@/app/settings-provider";
 import { useResetSession } from "@/hooks/use-sessions";
-
-interface Session {
-  id: string;
-  engine: string;
-  engineSessionId: string | null;
-  source: string;
-  sourceRef: string;
-  connector: string | null;
-  sessionKey: string;
-  replyContext: Record<string, unknown> | null;
-  messageId: string | null;
-  employee: string | null;
-  model: string | null;
-  title: string | null;
-  parentSessionId: string | null;
-  status: "idle" | "running" | "error" | "waiting" | "paused";
-  transportState?: "idle" | "queued" | "running" | "error" | "waiting" | "paused";
-  queueDepth?: number;
-  createdAt: string;
-  lastActivity: string;
-  lastError: string | null;
-}
+import { ResumeModal } from "./resume-modal";
 
 const statusVariant: Record<string, "default" | "secondary" | "destructive" | "outline"> = {
   idle: "secondary",
@@ -74,6 +53,9 @@ export function SessionDetail({
   const [children, setChildren] = useState<Session[]>([]);
   const resetSession = useResetSession();
   const canReset = ["error", "waiting", "paused"].includes(session.status);
+  const [resumeOpen, setResumeOpen] = useState(false);
+  const showResumeChip = !!session.errorKind && session.errorRecoverable === true;
+  const defaultNudge = "keep going";
 
   useEffect(() => {
     api.getSessionChildren(session.id)
@@ -86,6 +68,31 @@ export function SessionDetail({
       <CardHeader>
         <CardTitle className="text-[length:var(--text-headline)] text-[var(--text-primary)]">
           {session.title || "Session Detail"}
+          {showResumeChip && (
+            <button
+              type="button"
+              data-testid="error-chip"
+              onClick={() => setResumeOpen(true)}
+              style={{
+                marginLeft: 8,
+                display: "inline-flex",
+                alignItems: "center",
+                padding: "2px 8px",
+                borderRadius: 10,
+                background: "#d97706",
+                color: "#fff",
+                fontSize: 10,
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
+                border: "none",
+                cursor: "pointer",
+                verticalAlign: "middle",
+              }}
+            >
+              ⚠ {session.errorKind!.replace("_", " ")}
+            </button>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -198,6 +205,17 @@ export function SessionDetail({
           )}
         </div>
       </CardContent>
+      {resumeOpen && showResumeChip && (
+        <ResumeModal
+          sessionId={session.id}
+          errorKind={session.errorKind!}
+          lastError={session.lastError ?? ""}
+          errorRetryAfter={session.errorRetryAfter ?? null}
+          autoResumeScheduledAt={session.errorRetryAfter ?? null}
+          defaultNudge={defaultNudge}
+          onClose={() => setResumeOpen(false)}
+        />
+      )}
     </Card>
   );
 }
