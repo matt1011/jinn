@@ -48,7 +48,7 @@ import { JINN_HOME } from "../shared/paths.js";
 import { resolveEffort } from "../shared/effort.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
-import { loadJobs, saveJobs } from "../cron/jobs.js";
+import { loadJobs, saveJobs, readLatestRun } from "../cron/jobs.js";
 import { reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
 import QRCode from "qrcode";
@@ -398,6 +398,31 @@ export async function handleListRecoverable(): Promise<{ status: number; body: R
       } satisfies RecoverableSessionSummary;
     });
   return { status: 200, body: recoverable };
+}
+
+export async function handleListCronJobs(jobs: CronJob[]): Promise<{ status: number; body: unknown }> {
+  const enriched = jobs.map((job) => {
+    const latest = readLatestRun(job.id);
+    if (!latest) {
+      // Preserve historic `lastRun: null` shape so existing consumers keep working.
+      return { ...job, lastRun: null };
+    }
+    const session = latest.sessionId ? getSession(latest.sessionId) : undefined;
+    const ar = latest.sessionId ? getAutoResumeForSession(latest.sessionId) : null;
+    return {
+      ...job,
+      lastRun: latest,
+      latestRun: {
+        timestamp: latest.timestamp,
+        status: latest.status,
+        durationMs: latest.durationMs,
+        sessionId: latest.sessionId ?? null,
+        errorKind: session?.errorKind,
+        autoResumeScheduledAt: ar?.fireAt ?? null,
+      },
+    };
+  });
+  return { status: 200, body: enriched };
 }
 
 export async function handleApiRequest(
@@ -919,19 +944,8 @@ export async function handleApiRequest(
     // GET /api/cron
     if (method === "GET" && pathname === "/api/cron") {
       const jobs = loadJobs();
-      // Enrich with last run status
-      const enriched = jobs.map((job) => {
-        const runFile = path.join(CRON_RUNS, `${job.id}.jsonl`);
-        let lastRun = null;
-        if (fs.existsSync(runFile)) {
-          const lines = fs.readFileSync(runFile, "utf-8").trim().split("\n").filter(Boolean);
-          if (lines.length > 0) {
-            try { lastRun = JSON.parse(lines[lines.length - 1]); } catch {}
-          }
-        }
-        return { ...job, lastRun };
-      });
-      return json(res, enriched);
+      const result = await handleListCronJobs(jobs);
+      return json(res, result.body, result.status);
     }
 
     // GET /api/cron/:id/runs

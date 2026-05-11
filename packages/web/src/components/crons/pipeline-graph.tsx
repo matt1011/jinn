@@ -1,6 +1,14 @@
 "use client"
 
 import { describeCron } from "@/lib/cron-utils"
+import { CronLastRunIndicator } from "./cron-last-run-indicator"
+
+interface LatestRun {
+  status: "success" | "error"
+  durationMs: number
+  errorKind?: string
+  autoResumeScheduledAt?: string | null
+}
 
 interface CronJob {
   id: string
@@ -9,6 +17,7 @@ interface CronJob {
   enabled: boolean
   employee?: string
   engine?: string
+  latestRun?: LatestRun
   [key: string]: unknown
 }
 
@@ -101,6 +110,18 @@ function CronCardGroup({ crons, label }: { crons: CronJob[]; label: string }) {
                   </span>
                 )}
               </div>
+
+              {/* Last run indicator */}
+              {cron.latestRun && (
+                <div className="mt-1.5">
+                  <CronLastRunIndicator
+                    status={cron.latestRun.status}
+                    durationMs={cron.latestRun.durationMs}
+                    errorKind={cron.latestRun.errorKind}
+                    autoResumeScheduledAt={cron.latestRun.autoResumeScheduledAt}
+                  />
+                </div>
+              )}
             </div>
           )
         })}

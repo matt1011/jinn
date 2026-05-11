@@ -23,3 +23,27 @@ export function appendRunLog(jobId: string, entry: object): void {
   const logPath = path.join(CRON_RUNS, `${jobId}.jsonl`);
   fs.appendFileSync(logPath, JSON.stringify(entry) + "\n", "utf-8");
 }
+
+export interface RunLogEntry {
+  timestamp: string;
+  sessionKey?: string;
+  sessionId?: string;
+  status: "success" | "error" | string;
+  durationMs: number;
+  error?: string | null;
+  resultPreview?: string | null;
+  [key: string]: unknown;
+}
+
+export function readLatestRun(jobId: string): RunLogEntry | null {
+  const file = path.join(CRON_RUNS, `${jobId}.jsonl`);
+  try {
+    const content = fs.readFileSync(file, "utf-8");
+    const lines = content.trim().split("\n").filter(Boolean);
+    if (lines.length === 0) return null;
+    return JSON.parse(lines[lines.length - 1]) as RunLogEntry;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
