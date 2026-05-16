@@ -29,6 +29,7 @@ import { logger } from "../shared/logger.js";
 import { resolveEffort } from "../shared/effort.js";
 import { classifyError, computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit, extractRetryAfter, isDeadSessionError } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, isLikelyNearClaudeUsageLimit, recordClaudeRateLimit } from "../shared/usageAwareness.js";
+import { buildClaudeSyncTranscriptPrompt } from "../shared/syncPrompt.js";
 import { loadJobs } from "../cron/jobs.js";
 import { setCronJobEnabled, triggerCronJob } from "../cron/scheduler.js";
 import { checkBudget } from "../gateway/budgets.js";
@@ -364,9 +365,7 @@ export class SessionManager {
         const sinceMessages = getMessages(session.id)
           .filter((m) => (m.role === "user" || m.role === "assistant") && m.timestamp >= syncSinceMs)
           .map((m) => `${m.role.toUpperCase()}: ${m.content}`);
-        const transcript = sinceMessages.slice(-20).join("\n\n");
-        promptToRun =
-          `We temporarily switched to GPT due to a Claude usage limit. Sync your context with this transcript (most recent last), then respond to the last USER message.\n\n${transcript}`;
+        promptToRun = buildClaudeSyncTranscriptPrompt(sinceMessages);
       }
 
       // Budget enforcement — check BEFORE engine.run()

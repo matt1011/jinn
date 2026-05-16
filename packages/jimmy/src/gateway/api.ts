@@ -48,6 +48,7 @@ import { JINN_HOME } from "../shared/paths.js";
 import { resolveEffort } from "../shared/effort.js";
 import { computeNextRetryDelayMs, computeRateLimitDeadlineMs, detectRateLimit } from "../shared/rateLimit.js";
 import { getClaudeExpectedResetAt, recordClaudeRateLimit } from "../shared/usageAwareness.js";
+import { buildClaudeSyncTranscriptPrompt } from "../shared/syncPrompt.js";
 import { loadJobs, saveJobs, readLatestRun } from "../cron/jobs.js";
 import { reloadScheduler } from "../cron/scheduler.js";
 import { runCronJob } from "../cron/runner.js";
@@ -2235,8 +2236,7 @@ async function runWebSession(
         const sinceMessages = getMessages(currentSession.id)
           .filter((m) => (m.role === "user" || m.role === "assistant") && m.timestamp >= syncSinceMs)
           .map((m) => `${m.role.toUpperCase()}: ${m.content}`);
-        const transcript = sinceMessages.slice(-20).join("\n\n");
-        return `We temporarily switched to GPT due to a Claude usage limit. Sync your context with this transcript (most recent last), then respond to the last USER message.\n\n${transcript}`;
+        return buildClaudeSyncTranscriptPrompt(sinceMessages);
       })()
       : prompt;
 
